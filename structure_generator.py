@@ -13,6 +13,59 @@ from ase.spacegroup import get_spacegroup
 import spglib
 import sqlite3
 
+def get_volumne(num_atoms):
+    'as shown in ase, an initial guess are values of 8-12 A^3 per atom'
+    volume = (np.random.randint(80, 121) / 10.0) * num_atoms
+    return volume
+
+def random_sum_uniform(target_sum, n_numbers):
+    # Generate (n_numbers - 1) cut points between 0 and target_sum
+    cuts = np.sort(np.random.choice(range(1, target_sum), n_numbers - 1, replace=False))
+    parts = np.diff([0, *cuts, target_sum])
+    return parts.tolist()
+
+
+def random_block(min, max, block, build_blocks):
+    max = max+1
+    for v in build_blocks:
+        if len(v) != len(block):
+            raise ValueError(f'Error: building blocks array doesnt match with the number of building atoms ({len(block)})')
+
+    #num_atoms = np.random.randint(min, max)
+    num_elements = len(block)
+
+    num_atom_in_build = np.array([sum(sublist) for sublist in build_blocks])
+    if sum(num_atom_in_build) > max:
+        raise ValueError(f'Error: building blocks contains more atoms that allowed by maxAt ({max})')
+
+    stoich = 0
+    while True:
+        num_atoms = np.random.randint(min, max)
+        ratio = random_sum_uniform(num_atoms, len(build_blocks))
+        floor = ratio//num_atom_in_build
+        count = 0
+        if 0 in floor:
+            while count < len(build_blocks):
+                ratio = np.roll(ratio, 1).tolist()
+                #print(ratio)
+                count += 1
+                floor = ratio // num_atom_in_build
+
+                if 0 not in floor:
+                    break
+
+            stoich = floor * num_atom_in_build
+        else:
+            stoich = floor * num_atom_in_build
+
+        #print(stoich)
+        #print(num_atoms)
+        if sum(stoich)>=min and sum(stoich)<=max and 0 not in floor:
+            break
+
+    #print(floor, 'This is the end')
+    return floor
+
 
 class generation_generator():
     '''
@@ -36,15 +89,27 @@ class generation_generator():
         of cases, no cell cell splitting will be applied.
     db_name: str
         name of the db file to store the structures
+    varcomp: list
+        a list with the min amount and max amount of atoms [minAt, maxAt]
+    build_blocks: matrix
+        matrix of compositional building blocks for variable composition
+        as used in Uspex (numSpecies) manual pg. 39
+        [[2, 0],
+        [0, 1]]
+        For a system AB that means that the building blocks are 2A and B
     '''
 
-    def __init__(self, blocks, population, volume, splits, db_name, symmetry):
+    def __init__(self, blocks, population, volume, splits, db_name, symmetry, varcomp, build_blocks = None):
         self.blocks = blocks
+        self.block_guess = None
         self.population = population
         self.volume = volume
+        self.volume_guess = None
         self.splits = splits
         self.db_name = db_name
         self.symmetry = symmetry
+        self.varcomp = varcomp
+        self.build_blocks = build_blocks
 
     def sym_random_generator(self):
         elements, counts = zip(*self.blocks)
@@ -65,6 +130,8 @@ class generation_generator():
                 print('error')
                 continue
 
+
+
     def create_structures(self):
 
         # Generate a dictionary with the closest allowed interatomic distances(Mg-Mg, Mg-O, O-O)
@@ -73,6 +140,25 @@ class generation_generator():
         # stoichiometry is a list of the atomic numbers of all the atoms, it should be the same length
         # as numer of atoms in the cell
         stoichiometry = [atomic_numbers[name] for name, count in self.blocks for _ in range(count)]
+
+        if self.varcomp != None:
+            minAt = min(self.varcomp)
+            maxAt = max(self.varcomp)
+            element_name = [t[0] for t in self.blocks]
+            "def random_block generates random variable composition, we store this in another list"
+            self.block_guess = [list(zip(element_name,random_block(minAt,maxAt, self.blocks, self.build_blocks))) for _ in range(self.population)]
+            self.volume_guess = [get_volumne(sum(value for _, value in sublist)) for sublist in self.block_guess]
+        else:
+            if self.volume == None:
+                self.volume_guess = [get_volumne(len(stoichiometry)) for i in range(self.population)]
+
+            else:
+                self.volume_guess = [self.volume]
+
+        print(self.volume_guess)
+        print(self.block_guess)
+
+
 
         blmin = closest_distances_generator(
             atom_numbers=atom_num, ratio_of_covalent_radii=0.5
@@ -99,11 +185,13 @@ class generation_generator():
         slab = Atoms('', pbc=True)
 
         # Initialize the random structure generator
+        print(type(self.blocks))
+        print(self.blocks)
         sg = StartGenerator(
             slab,
-            self.blocks,
             blmin,
-            box_volume=self.volume,
+            blocks=self.blocks,
+            box_volume=self.volume_guess[0],
             number_of_variable_cell_vectors=3,
             cellbounds=cellbounds,
             splits=self.splits,
@@ -122,12 +210,32 @@ class generation_generator():
         # Generate N random structures
         # and add them to the database
         for i in range(self.population):
-            if self.symmetry == True:
-                a = self.sym_random_generator()
-                da.add_unrelaxed_candidate(a, spacegroup = a.info['spacegroup'])
-            elif self.symmetry == False:
-                a = sg.get_new_candidate()
-                da.add_unrelaxed_candidate(a)
+            if self.varcomp == None:
+                if self.symmetry == True:
+                    a = self.sym_random_generator()
+                    da.add_unrelaxed_candidate(a, spacegroup = a.info['spacegroup'])
+                elif self.symmetry == False:
+                    a = sg.get_new_candidate()
+                    if len(self.volume_guess) > 1:
+                        sg.box_volume = self.volume_guess[i]
+                    else:
+                        None
+                    da.add_unrelaxed_candidate(a)
+            else:
+                if self.symmetry == True:
+                    a = self.sym_random_generator()
+                    da.add_unrelaxed_candidate(a, spacegroup = a.info['spacegroup'])
+                elif self.symmetry == False:
+                    a = sg.get_new_candidate()
+                    if len(self.volume_guess) > 1:
+                        sg.box_volume = self.volume_guess[i]
+                        sg.blocks = self.block_guess[i]
+                    else:
+                        None
+                    da.add_unrelaxed_candidate(a)
+
+
+
 
 class population_vis():
     def __init__(self, db_name, num_prev):
@@ -181,30 +289,41 @@ class population_vis():
 
 
 
-gen = generation_generator(blocks = [('Mg', 4), ('Al',8),('O', 16)],
+gen_spinel = generation_generator(blocks = [('Mg', 4), ('Al',8),('O', 16)],
                            population=40,
                            volume = 240,
                            splits = {(4,): 1, (1,): 1},
                            db_name = 'GA1_sym_40.db',
-                           symmetry = True)
+                           symmetry = True,
+                           varcomp=None)
 
-gen2 = generation_generator(blocks = [('Mg', 4), ('Al',8),('O', 16)],
-                           population=40,
-                           volume = 240.0,
+gen_spinel2 = generation_generator(blocks = [('Mg', 4), ('Al',8),('O', 16)],
+                           population=10,
+                           volume = None,
                            splits = {(2,): 1, (1,): 1},
                            db_name = 'GA1_40.db',
-                           symmetry=False)
+                           symmetry=False,
+                           varcomp=None,)
 
-#gen2.create_structures()
+gen_MoB = generation_generator(blocks = [('Mo', 1), ('B',1)],
+                           population=20,
+                           volume = 240.0,
+                           splits = {(2,): 1, (1,): 1},
+                           db_name = 'MoB.db',
+                           symmetry=False,
+                           varcomp=[8,18],
+                            build_blocks=[[1,0],[0,1]])
 
+gen_MoB.create_structures()
 
-prev = population_vis('/home/vito/PythonProjects/ASEProject/EA/Programms/GA1_40.db', 5)
+#
+# prev = population_vis('/home/vito/PythonProjects/ASEProject/EA/Programms/GA1_40.db', 5)
 #prev_2 = population_vis('prueba4.db', 1)
 
 #for i in range(1490,1495):
 #    prev.open_one_struc(i)
-
-prev.open_one_struc(15)
+#
+# prev.open_one_struc(15)
 #prev.open_one_struc(155)
 #prev.open_one_struc(135)
 

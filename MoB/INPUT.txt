@@ -1,0 +1,52 @@
+******************************************
+*      TYPE OF RUN AND SYSTEM            *
+******************************************
+USPEX : calculationMethod (USPEX, VCNEB, META)
+301   : calculationType (dimension: 0-3; molecule: 0/1; varcomp: 0/1)
+1     : AutoFrac
+
+% optType
+1
+% EndOptType
+
+% atomType
+Mo B
+% EndAtomType
+
+% numSpecies
+1 0
+0 1
+% EndNumSpecies
+******************************************
+*               POPULATION               *
+******************************************
+120   : populationSize
+200   : initialPopSize
+60    : numGenerations
+20    : stopCrit
+0     : reoptOld
+******************************************
+*       FIRST VAR. COMP. GENERATION      *
+******************************************
+11    : firstGeneMax 
+8     : minAt 
+18    : maxAt 
+******************************************
+*          VARIATION OPERATORS           *
+******************************************
+0.40  : fracGene
+0.20  : fracRand
+0.20  : fracAtomsMut
+0.20  : fracTrans
+0.00  : fracLatMut
+0.00  : fracPerm
+*****************************************
+*   DETAILS OF AB INITIO CALCULATIONS   *
+*****************************************
+% abinitioCode
+3 3 3 3 
+% ENDabinit
+
+% commandExecutable
+gulp < input > output
+% EndExecutable
