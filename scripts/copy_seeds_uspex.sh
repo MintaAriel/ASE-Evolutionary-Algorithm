@@ -41,7 +41,9 @@ export VECLIB_MAXIMUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 
 echo "[INFO] Running USPEX in \$PWD on core \$CORE"
-taskset -c \$CORE conda run -n uspex_matlab ~/uspex_matlab/program/application/archive/USPEX -r "\$PWD"
+taskset -c \$CORE conda run -n uspex_matlab ~/uspex_matlab/program/application/archive/USPEX -r "\$PWD"\
+2>&1 | tee "$LOGFILE"
+
 EOF
 
     chmod +x "$RUN_SCRIPT"
