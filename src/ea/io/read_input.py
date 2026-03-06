@@ -41,6 +41,9 @@ def parse_input_file(filepath):
         raise FileNotFoundError(f"Input file not found: {filepath}")
 
     params = {}
+    params.setdefault('firstGenPOSCAR', 0)
+
+
     with open(filepath, 'r') as f:
         lines = f.readlines()
 
@@ -107,6 +110,7 @@ def parse_input_file(filepath):
     split_dict = {(x,): y for x, y in splits_list}
 
     params['splits'] = split_dict
+
 
     return params
 

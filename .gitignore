@@ -9,6 +9,14 @@ data/
 test/
 
 
+
+scripts/Submission/
+
+#metadata of the package
+build/
+dist/
+*.egg-info/
+
 # Virtual environment
 venv/
 env/

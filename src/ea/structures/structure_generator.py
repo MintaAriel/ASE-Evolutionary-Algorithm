@@ -3,7 +3,7 @@ from ase.ga.data import PrepareDB
 from ase.ga.startgenerator import StartGenerator
 from ase.ga.utilities import CellBounds, closest_distances_generator
 import numpy as np
-from pyxtal_ea import create_pyxtal
+from .pyxtal_ea import create_pyxtal
 
 
 def count_stoichometry(lst):

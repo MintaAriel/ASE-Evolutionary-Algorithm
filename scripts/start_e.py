@@ -1,11 +1,10 @@
 import os
-from ase_creator import mol2ase
-from read_input import parse_input_file
-from structure_generator import first_gen_mol
+from ea.structures import ase_creator, structure_generator, create_seeds
+from ea.io import read_input
 import argparse
 import shutil
 
-def clean_workdir(workdir, keep_files=("MOL_1", "INPUT.txt")):
+def clean_workdir(workdir, keep_files=("MOL_1", "ase_INPUT.txt")):
     """
     Deletes all files and directories inside workdir
     except those listed in keep_files.
@@ -32,13 +31,13 @@ def main():
         "workdir",
         nargs="?",
         default=".",
-        help="Working directory containing INPUT.txt and MOL_1"
+        help="Working directory containing ase_INPUT.txt and MOL_1"
     )
 
     parser.add_argument(
         "--clean",
         action="store_true",
-        help="Delete all files in working directory except MOL_1 and INPUT.txt"
+        help="Delete all files in working directory except MOL_1 and ase_INPUT.txt"
     )
 
     args = parser.parse_args()
@@ -49,12 +48,12 @@ def main():
     if not os.path.isdir(test_dir):
         raise FileNotFoundError(f"Directory does not exist: {test_dir}")
 
-    input_path = os.path.join(test_dir, "INPUT.txt")
+    input_path = os.path.join(test_dir, "ase_INPUT.txt")
     mol_path = os.path.join(test_dir, "MOL_1")
     db_path = os.path.join(test_dir, "theophilline.db")
 
     if not os.path.exists(input_path):
-        raise FileNotFoundError(f"Missing INPUT.txt in {test_dir}")
+        raise FileNotFoundError(f"Missing ase_INPUT.txt in {test_dir}")
 
     if not os.path.exists(mol_path):
         raise FileNotFoundError(f"Missing MOL_1 in {test_dir}")
@@ -65,22 +64,29 @@ def main():
         print(f"Cleaning directory: {test_dir}")
         clean_workdir(test_dir)
 
-    # Read INPUT.txt from current folder
-    params = parse_input_file(os.path.join(test_dir, 'INPUT.txt'))
+    # Read ase_INPUT.txt from current folder
+    params = read_input.parse_input_file(os.path.join(test_dir, 'ase_INPUT.txt'))
 
 
-    ase_mol = mol2ase(MOL_path=mol_path)
+    ase_mol = ase_creator.mol2ase(MOL_path=mol_path)
     molecule = ase_mol.read()
 
     n = params['numSpecies']
 
-    gen = first_gen_mol(blocks = [(molecule, n)],
+    gen = structure_generator.first_gen_mol(blocks = [(molecule, n)],
                                population=params['initialPopSize'],
                                volume = 300* params['volume_per_molecule'],
                                splits = params['splits'],
                                db_path = db_path,
                                symmetry = True)
     gen.create_structures()
+
+    if params['firstGenPOSCAR'] == 1:
+        seeds = create_seeds.write_POSCAR(db=db_path,
+                             out_dir=test_dir)
+        seeds.poscar_name = 'POSCARS_1'
+        seeds.create(params['initialPopSize'])
+
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ea"
+version = "0.1.0"
+description = "Evolutionary algorithm for molecular crystals"
+authors = [{name = "Brian"}]
+
+[tool.setuptools.packages.find]
+where = ["src"]

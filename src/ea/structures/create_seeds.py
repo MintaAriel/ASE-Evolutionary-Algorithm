@@ -42,20 +42,5 @@ class write_POSCAR():
         os.remove(temp_poscar)
 
 
-seeds = write_POSCAR(db='/home/vito/uspex_matlab/test_db_creation/theophilline.db',
-                     out_dir='/home/vito/uspex_matlab/test_db_creation')
-seeds.poscar_name = 'POSCARS_1'
-seeds.create(40)
-
-# with open('/home/vito/uspex_matlab/test_db_creation/POSCARS_1', 'r') as f:
-#     content = f.readlines()
-#     print(content[:15])
-# da = DataConnection('/home/vito/uspex_matlab/test_db_creation/theophilline.db')
-#
-# atom = da.get_atoms(2)
-#
-# crystal_sorted = sort(atom)
-# print(atom)
-# print(crystal_sorted)
 
 
