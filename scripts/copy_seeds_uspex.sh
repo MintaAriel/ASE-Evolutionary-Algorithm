@@ -30,6 +30,8 @@ cd "$(dirname "$0")"  # <-- go to the folder containing run.sh
 # Assign core (0-9)
 CORE=$((i-1))
 
+LOGFILE="run.log"
+
 # Limit all math threads to 1
 export OMP_NUM_THREADS=1
 export OMP_THREAD_LIMIT=1
@@ -41,8 +43,7 @@ export VECLIB_MAXIMUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 
 echo "[INFO] Running USPEX in \$PWD on core \$CORE"
-taskset -c \$CORE conda run -n uspex_matlab ~/uspex_matlab/program/application/archive/USPEX -r "\$PWD"\
-2>&1 | tee "$LOGFILE"
+taskset -c \$CORE conda run -n uspex_matlab ~/uspex_matlab/program/application/archive/USPEX -r "\$PWD" \ 2>&1 | tee "\$LOGFILE"
 
 EOF
 
