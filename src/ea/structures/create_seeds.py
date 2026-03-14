@@ -1,5 +1,4 @@
 import os.path
-
 from ase.ga.data import DataConnection
 from ase.io import read, write
 from ase.build import sort

@@ -77,16 +77,7 @@ def indiv_to_df(indiv_dir):
     return (df)
 
 
-cif_dir = r"/home/brian/USPEX_work/EX02/results3/symmetrized_structures.cif"
-indiv_dir = r"/home/brian/USPEX_work/EX02/results3/Individuals"
 
-ciff_df = ciff_to_df(cif_dir)
-ind_df = indiv_to_df(indiv_dir)
-structures = pd.concat([ciff_df, ind_df], axis=1)
-structures.to_csv('structures.csv', index=False)
-structures
-
-df_63 = structures[structures['SYMM'] == 63]
 
 
 def export_cif(df, crystal, folder_name):
@@ -106,4 +97,4 @@ def export_cif(df, crystal, folder_name):
             f.write(plain_text)
 
 
-export_cif(df_63, 'Spinel', 63)
+# export_cif(df_63, 'Spinel', 63)
