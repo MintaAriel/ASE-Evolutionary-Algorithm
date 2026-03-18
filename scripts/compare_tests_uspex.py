@@ -4,30 +4,48 @@ from ea.analysis.success_rate import SuccessResults, AnalyzeTest
 from tabulate import tabulate
 from pathlib import Path
 
-d = parse_tests('/home/vito/PythonProjects/ASEProject/EA/test/collected_theophylline',
-                out_dir='/home/vito/PythonProjects/ASEProject/EA/test/collected_thp_all')
-# df = d.individuals()
-# print(df)
-
 script_dir = Path(__file__).parent
 project_root = script_dir.parent
+
+def create_db(folder, type ):
+
+    # folder = 'theophylline_seeds_0'
+
+    results_dir = os.path.join(project_root,'results','THP','tests', folder)
+
+    if type == 'all':
+        out_dir = os.path.join(project_root,'results','THP','individuals')
+
+    elif type == 'best':
+        out_dir = os.path.join(project_root,'results','THP','best_individuals')
+
+    collect = parse_tests(tests_dir=results_dir,
+                    out_dir=out_dir)
+    collect.individuals(type=type, db=True)
+
+tests = ['theophylline_uspex','collected_theophylline_0','collected_theophylline_1',
+         'collected_theophylline_2','collected_theophylline_3']
+
+# for test in tests:
+#     create_db(test, type='best')
+#     create_db(test, type='all')
+
+
+
 
 spinel_results_dir = os.path.join(project_root,'results', 'THP', 'best_individuals')
 
 
-# spinel_folders = {'ase':['ase_2.db', 'uspex'],
-#                   'uspex_python_my':['uspex_python.db', 'uspex'],
-#                   'ase_3':['runs_ase_3.db', 'ase'],}
 
-thp_folder = {'uspex':['theophylline_full.db','uspex'],
-              'pyxtal':['theophylline_seeds_1.db','uspex'],
-              'pyxtal/reaxff':['theophylline_seeds_2.db','uspex'],
-              'pyxtal/reaxff small':['theophylline_seeds_3.db','uspex']}
+thp_folder = {'uspex':['best_theophylline_uspex.db','uspex'],
+              'pyxtal':['best_collected_theophylline_1.db','uspex'],
+              'pyxtal/reaxff':['best_collected_theophylline_2.db','uspex'],
+              'pyxtal/reaxff small':['best_collected_theophylline_3.db','uspex']}
 
 
 def read_results(dic_experiments, task='read'):
     '''
-    :param dic_experiments: Dictionary with db.name and program used
+    :param dic_experiments: Dictionary with db.name (collected BESTIndividuals) and program used
     Example:
     spinel_folders = {'ase':['ase_2.db', 'uspex'],
                     'uspex_python_my':['uspex_python.db', 'uspex'],
@@ -51,25 +69,7 @@ def read_results(dic_experiments, task='read'):
         benchmark = SuccessResults(spinel_results)
         benchmark.plot_success()
         # benchmark.plot_success_hist()
-        benchmark.plot_best()
-read_results(dic_experiments=thp_folder, task='compare')
+        # benchmark.plot_best()
 
-# 'uspex_mat': uspex_mat.success_df,
-# 'ase':ase.success_df,
-# success = {'ase_pyxtal_cor': ase_pyxtal_cor.success_df,
-#            'uspexpy1': uspex_python.success_df,
-#            'uspexpy2': uspex_python_my.success_df,
-#            'uspexpy3':uspexpy2.success_df,
-#            'ase3': ase_3.success_df}
-#
-# print(success)
-#
-# print([(k,str(v['success'].sum())) for k,v in success.items()])
-# #uspex_mat.plot_success_hist(success)
-# uspex_mat.plot_success(success)
+# read_results(dic_experiments=thp_folder, task='compare')
 
-#print('this is the success \n',ase_pyxtal.success_df['success'].value_counts())
-
-
-
-#uspex_mat.plot_best(data)

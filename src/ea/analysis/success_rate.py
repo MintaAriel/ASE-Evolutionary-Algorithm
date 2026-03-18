@@ -1,9 +1,12 @@
+import os.path
 import pandas as pd
 import sqlite3
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
-
+from ea.io.uspex_io import get_structure_from_id
+from typing import Dict
+from io import StringIO
 
 class AnalyzeTest():
     def __init__(self, db, program):
@@ -114,6 +117,149 @@ class SuccessResults():
         plt.ylabel('Discovered global minimum')
         plt.legend()
         plt.show()
+
+class AllIndivuals():
+    def __init__(self, db_dir):
+        self.db = db_dir
+        self.con = sqlite3.connect(self.db)
+        self.df = pd.read_sql('SELECT * FROM results', self.con)
+
+        # Perform a clean of duplicate structures by energy, volume and symmetry
+        self.df_clean = (
+            self.df
+            .dropna(subset=["energy"])
+            .loc[lambda x: x["operator"] != "keptBest"]
+            .drop_duplicates(subset=["energy", "volume", "symmetry"])
+            .reset_index(drop=True)
+        )
+
+    def df_d(self):
+        print(self.df_clean)
+        plt.hist(self.df_clean['energy'],bins=100, edgecolor='black')
+        plt.show()
+
+    def energy_per_generation(self,generation=1, parameter='energy', plot=True):
+        df_filtered = (self.df[self.df ['generation'] == generation]
+                        .sort_values(by=parameter, ascending=True))
+
+        nan_percentage = df_filtered['energy'].isna().mean() * 100
+        print(f'Percentage of non-valid structures (Fitness = 10 000): {nan_percentage}%')
+        if plot:
+            plt.hist(df_filtered['symmetry'], bins=100, edgecolor='black')
+            plt.show()
+
+
+
+        return df_filtered
+
+
+    def operator_percent(self, generation=5, parameter='Random', plot=False):
+
+        percentages = (
+                self.df.assign(is_random=self.df['operator'] == parameter)
+                .groupby('generation')['is_random']
+                .mean() * 100
+        )
+
+        print(percentages)
+        if plot:
+            plt.plot(percentages[1:generation])
+            plt.title(f'{parameter} operator percent per generation')
+            plt.xlabel('generation')
+            plt.ylabel('%')
+            plt.show()
+
+        return percentages
+
+    def mean_energy(self, top_generation=10, plot=False):
+        mean_energy = (self.df
+                       .groupby('generation')['energy']
+                       .mean())
+
+        if plot:
+            plt.plot(mean_energy[:top_generation])
+            plt.title(f'mean energy per generation')
+            plt.xlabel('generation')
+            plt.ylabel('Energy, eV')
+            plt.show()
+
+        return mean_energy
+
+    def get_lowets(self, n=100):
+        df_low = (
+            self.df_clean
+            .sort_values(by="energy", ascending=True)
+            .drop_duplicates(subset=["energy", "symmetry"])
+            .iloc[:n]
+            .copy()
+        )
+        return df_low
+
+    def get_lowest_poscar(self, n: int=100 , gatheredPOSCARS_dir='.', out_dir='.'):
+        df = self.get_lowets(n=n)
+        structures_id = (
+            df.sort_values(["run", "id"])
+            .groupby("run")["id"]
+            .apply(list)
+            .to_dict()
+        )
+        best = {}
+        for k,v in structures_id.items():
+            poscar_dir= os.path.join(gatheredPOSCARS_dir, f'gatheredPOSCARS_test_{k}')
+            # print(type(f))
+            collected_poscar = get_structure_from_id(poscar_dir= poscar_dir, id_structures= v)
+            best[k] = collected_poscar
+
+        runs = df['run'].tolist()
+        ids = df['id'].tolist()
+        energies = df['energy'].tolist()
+
+        All_poscars = ''
+
+        for i in range(len(ids)):
+            poscar = best[runs[i]][ids[i]]
+            comment = f' | test={runs[i]} | energy={energies[i]}'
+
+            lines = poscar.splitlines()
+            lines[0] = lines[0] + comment
+            All_poscars += "\n".join(lines) + '\n'
+
+
+        with open(os.path.join(out_dir,"ALL_POSCARS"), "w") as f:
+            f.write(All_poscars)
+
+        return df
+
+
+class CompareRuns:
+    def __init__(self, dict_results: Dict[any, AllIndivuals]):
+        """
+        :param dict_results: Dictionary with AllIndivuals objects
+        """
+        self.dict_results = dict_results
+
+    def mean_energy(self, generation : int = 10):
+        energy = {}
+        for k,v in self.dict_results.items():
+            energy[k] = v.mean_energy(top_generation=generation)
+            plt.plot(energy[k], label=k)
+        plt.show()
+
+        return energy
+
+    def operator_percent(self, top_gen=10, parameters='Random'):
+        runs = {}
+        for k,v in self.dict_results.items():
+            runs[k] = v.operator_percent(parameter=parameters,  generation=top_gen)
+            plt.plot(runs[k], label=k)
+        plt.show()
+
+
+
+
+
+
+
 
 
 
