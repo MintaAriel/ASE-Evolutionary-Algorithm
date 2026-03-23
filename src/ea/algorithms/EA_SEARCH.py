@@ -9,7 +9,7 @@ from ase.ga.standardmutations import StrainMutation
 from ase.ga.utilities import CellBounds, closest_distances_generator
 from ase.io import write
 import os
-from relax import Gulp_relaxation
+from pygulp.relaxation.relax import Gulp_relaxation
 import numpy as np
 import re
 

@@ -138,7 +138,7 @@ class AllIndivuals():
         plt.hist(self.df_clean['energy'],bins=100, edgecolor='black')
         plt.show()
 
-    def energy_per_generation(self,generation=1, parameter='energy', plot=True):
+    def energy_per_generation(self,generation=1, parameter='energy', plot=False):
         df_filtered = (self.df[self.df ['generation'] == generation]
                         .sort_values(by=parameter, ascending=True))
 
@@ -195,7 +195,7 @@ class AllIndivuals():
         )
         return df_low
 
-    def get_lowest_poscar(self, n: int=100 , gatheredPOSCARS_dir='.', out_dir='.'):
+    def get_lowest_poscar(self, n: int=100 , gatheredPOSCARS_dir='.', out_dir='.', name='POSCARS'):
         df = self.get_lowets(n=n)
         structures_id = (
             df.sort_values(["run", "id"])
@@ -225,7 +225,7 @@ class AllIndivuals():
             All_poscars += "\n".join(lines) + '\n'
 
 
-        with open(os.path.join(out_dir,"ALL_POSCARS"), "w") as f:
+        with open(os.path.join(out_dir,name), "w") as f:
             f.write(All_poscars)
 
         return df
@@ -243,6 +243,10 @@ class CompareRuns:
         for k,v in self.dict_results.items():
             energy[k] = v.mean_energy(top_generation=generation)
             plt.plot(energy[k], label=k)
+        plt.title(f'mean energy per generation')
+        plt.xlabel('generation')
+        plt.ylabel('Energy, eV')
+        plt.legend()
         plt.show()
 
         return energy
@@ -252,6 +256,36 @@ class CompareRuns:
         for k,v in self.dict_results.items():
             runs[k] = v.operator_percent(parameter=parameters,  generation=top_gen)
             plt.plot(runs[k], label=k)
+        plt.legend()
+        plt.show()
+
+    def energy_per_generation(self, parameter='energy'):
+        runs = {}
+
+        # Collect all energies
+        all_energies = []
+        for k, v in self.dict_results.items():
+            data = v.energy_per_generation()
+            runs[k] = data
+            all_energies.extend(data[parameter])
+
+        # Define common bins based on global min/max
+        bins = np.linspace(min(all_energies), max(all_energies), 100)
+
+        # Plot histograms with same bins and transparency
+        for k in runs:
+            plt.hist(
+                runs[k][parameter],
+                bins=bins,
+                alpha=0.25,  # transparency
+                edgecolor='black',
+                label=k
+            )
+
+        plt.legend()
+        plt.xlabel(f"{parameter}")
+        plt.ylabel("Count")
+        plt.title(f"{parameter} Distribution per Generation")
         plt.show()
 
 

@@ -1,6 +1,6 @@
 import os.path
 from ea.io.uspex_io import parse_tests
-from ea.analysis.success_rate import SuccessResults, AnalyzeTest
+from ea.analysis.success_rate import SuccessResults, AnalyzeTest, AllIndivuals, CompareRuns
 from tabulate import tabulate
 from pathlib import Path
 
@@ -29,7 +29,6 @@ tests = ['theophylline_uspex','collected_theophylline_0','collected_theophylline
 # for test in tests:
 #     create_db(test, type='best')
 #     create_db(test, type='all')
-
 
 
 
@@ -71,5 +70,59 @@ def read_results(dic_experiments, task='read'):
         # benchmark.plot_success_hist()
         # benchmark.plot_best()
 
-# read_results(dic_experiments=thp_folder, task='compare')
+read_results(dic_experiments=thp_folder, task='compare')
+
+# '/home/vito/PythonProjects/ASEProject/EA/test/collected_theophylline'
+
+
+#
+# d = AllIndivuals('/home/vito/PythonProjects/ASEProject/EA/results/THP/individuals/all_Individuals.db')
+# # print(d.operator_percent(parameter='LatMutate',  generation=20))
+# d.mean_energy()
+# # print(
+best_ind_dir = os.path.join(project_root,'results','THP','best_individuals')
+all_ind_dir = os.path.join(project_root,'results','THP','individuals')
+
+
+
+def get_poscar_best(experiment):
+    experiment_db = 'all_' + experiment + '.db'
+
+
+    test_dir = os.path.join(all_ind_dir, experiment_db)
+    gathered_poscar_dir = os.path.join(project_root,'results','THP','tests', experiment, 'gatheredPOSCARS')
+
+    out_dir = os.path.join(project_root,'results','THP','BEST_POSCARS')
+
+    d = AllIndivuals(test_dir)
+    d.get_lowest_poscar(gatheredPOSCARS_dir=gathered_poscar_dir,
+                        out_dir =out_dir,
+                        name=experiment+'POSCARS')
+
+def compare_mean_energy(experiment):
+
+    experiment_db = 'all_' + experiment + '.db'
+    test_dir = os.path.join(all_ind_dir, experiment_db)
+    collect = AllIndivuals(test_dir)
+    # collect.mean_energy(plot=True)
+    # collect.operator_percent(plot=True)
+    return collect
+
+
+
+
+# compare_mean_energy()
+test_names =  {'uspex':'theophylline_uspex',
+              'pyxtal':'collected_theophylline_1',
+              'pyxtal/reaxff':'collected_theophylline_2',
+              'pyxtal/reaxff small':'collected_theophylline_3'}
+
+# test_seeds = {key: compare_mean_energy(value) for key, value in test_names.items()}
+# print(test_seeds)
+#
+# compare = CompareRuns(test_seeds)
+# # compare.operator_percent(parameters='Random', top_gen=40)
+# compare.energy_per_generation(parameter='energy')
+#
+
 
