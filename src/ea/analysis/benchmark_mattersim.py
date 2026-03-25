@@ -14,23 +14,51 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from ase.io import read
+import shutil
+import tempfile
+
+from ase.io import read, write
 from ase.optimize import FIRE, LBFGS
-from ase.constraints import UnitCellFilter
+from ase.filters import FrechetCellFilter
 
 
 class MatterSimTester:
-    """Test MatterSim with a given trained model checkpoint and structure."""
+    """Test MatterSim with a given trained model checkpoint and structure.
 
-    def __init__(self, model_path, device="cpu"):
-        from mattersim.forcefield import MatterSimCalculator
+    Parameters
+    ----------
+    model_path : str or Path
+        Path to the MatterSim checkpoint (used in-process mode only).
+    device : str
+        "cpu" or "cuda".
+    container_root : str or Path or None
+        Root of the container_cpu_2 directory.  When given, relaxation
+        runs inside the Singularity/Apptainer SIF image with D3 corrections.
+        When *None*, relaxation runs in-process without D3.
+    input_template : str
+        Filename of the input template inside ``container_root/templates/``
+        (container mode only).
+    n_threads : int
+        Thread count forwarded to the container environment variables.
+    """
 
-        self.model_path = model_path
+    def __init__(self, model_path, device="cpu", container_root=None,
+                 input_template="input_mattersim_d3.py", n_threads=4):
+        self.model_path = str(model_path)
         self.device = device
-        self.calc = MatterSimCalculator.from_checkpoint(
-            load_path=model_path,
-            device=device,
-        )
+        self.container_root = Path(container_root) if container_root else None
+        self.input_template = input_template
+        self.n_threads = n_threads
+
+        if self.container_root is None:
+            from mattersim.forcefield import MatterSimCalculator
+            self.calc = MatterSimCalculator(load_path=self.model_path, device=device)
+        else:
+            self.calc = None
+
+    # ------------------------------------------------------------------
+    # public API
+    # ------------------------------------------------------------------
 
     def relax(self, atoms, fire_fmax=0.10, fire_steps=500,
               lbfgs_steps=1200, lbfgs_stages=None):
@@ -53,6 +81,9 @@ class MatterSimTester:
         -------
         dict with initial/final energies, step counts, and relaxed Atoms.
         """
+        if self.container_root is not None:
+            return self._relax_container(atoms)
+
         if lbfgs_stages is None:
             lbfgs_stages = [0.03, 0.01, 0.005, 0.002, 0.001]
 
@@ -63,7 +94,7 @@ class MatterSimTester:
 
         # FIRE stage
         fire = FIRE(
-            UnitCellFilter(atoms, hydrostatic_strain=False, constant_volume=False),
+            FrechetCellFilter(atoms, hydrostatic_strain=False, constant_volume=False),
             logfile=None,
             trajectory=None,
             maxstep=0.03,
@@ -73,7 +104,7 @@ class MatterSimTester:
 
         # Staged LBFGS
         lbfgs = LBFGS(
-            UnitCellFilter(atoms, hydrostatic_strain=False, constant_volume=False),
+            FrechetCellFilter(atoms, hydrostatic_strain=False, constant_volume=False),
             logfile=None,
             trajectory=None,
             maxstep=0.03,
@@ -91,6 +122,90 @@ class MatterSimTester:
             "total_steps": fire_steps_done + lbfgs_steps_done,
             "relaxed_atoms": atoms,
         }
+
+    # ------------------------------------------------------------------
+    # container-based relaxation (D3 corrections via SIF)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _container_runtime():
+        for name in ("singularity", "apptainer"):
+            if shutil.which(name):
+                return name
+        raise RuntimeError("Neither 'singularity' nor 'apptainer' found in PATH.")
+
+    def _relax_container(self, atoms):
+        root = self.container_root
+        sif = root / "containers" / "ml-relax-cpu.sif"
+        if not sif.is_file():
+            raise FileNotFoundError(f"SIF image not found: {sif}")
+
+        tmpdir = Path(tempfile.mkdtemp(dir=root, prefix="relax_"))
+        try:
+            struct_path = tmpdir / "input.cif"
+            write(str(struct_path), atoms)
+
+            container_struct = f"/work/{tmpdir.name}/input.cif"
+            container_outdir = f"/work/{tmpdir.name}/out"
+
+            runtime = self._container_runtime()
+            n = str(self.n_threads)
+
+            env = os.environ.copy()
+            thread_vars = [
+                "OMP_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS",
+                "OPENBLAS_NUM_THREADS", "VECLIB_MAXIMUM_THREADS",
+                "DP_INTRA_OP_PARALLELISM_THREADS",
+            ]
+            for var in thread_vars:
+                env[var] = n
+                env[f"SINGULARITYENV_{var}"] = n
+            env["DP_INTER_OP_PARALLELISM_THREADS"] = "1"
+            env["SINGULARITYENV_DP_INTER_OP_PARALLELISM_THREADS"] = "1"
+
+            cmd = [
+                runtime, "exec",
+                "--bind", f"{root}:/work",
+                str(sif),
+                "python", "/work/runner/ml_relax_cli.py",
+                "--input-script", f"/work/templates/{self.input_template}",
+                "--structure", container_struct,
+                "--models-dir", "/work/models",
+                "--device", self.device,
+                "--outdir", container_outdir,
+            ]
+
+            proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
+
+            result_json_path = tmpdir / "out" / "result.json"
+            if not result_json_path.is_file():
+                raise RuntimeError(
+                    f"Container produced no result.json (rc={proc.returncode}).\n"
+                    f"stdout: {proc.stdout[:500]}\nstderr: {proc.stderr[:500]}"
+                )
+
+            result_data = json.loads(result_json_path.read_text())
+
+            if result_data["status"] != "ok":
+                raise RuntimeError(
+                    f"Container relaxation failed: {result_data.get('error')}"
+                )
+
+            relaxed_atoms = read(str(tmpdir / "out" / "final.cif"))
+            relax_info = result_data.get("relax_info", {})
+
+            return {
+                "initial_energy": result_data["energy_initial_eV"],
+                "final_energy": result_data["energy_final_eV"],
+                "fire_steps": None,
+                "lbfgs_steps": None,
+                "total_steps": relax_info.get("nsteps", 0),
+                "relaxed_atoms": relaxed_atoms,
+                "fmax_final": result_data.get("fmax_final_eV_A"),
+                "runtime_s": result_data.get("runtime_s"),
+            }
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------

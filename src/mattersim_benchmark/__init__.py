@@ -1,1 +1,0 @@
-from mattersim_benchmark.benchmark import MatterSimTester

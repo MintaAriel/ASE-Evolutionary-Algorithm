@@ -14,6 +14,10 @@ def main():
     parser.add_argument("--structure", required=True)
     parser.add_argument("--n-threads", type=int, required=True)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--container-root", default=None,
+                        help="Path to container_cpu_2 dir. Enables D3 via SIF.")
+    parser.add_argument("--input-template", default="input_mattersim_d3.py",
+                        help="Template filename inside container_root/templates/.")
     args = parser.parse_args()
 
     n = args.n_threads
@@ -23,15 +27,22 @@ def main():
     os.environ["MKL_NUM_THREADS"] = str(n)
     os.environ["NUMEXPR_NUM_THREADS"] = str(n)
 
-    import torch
-    torch.set_num_threads(n)
+    if args.container_root is None:
+        import torch
+        torch.set_num_threads(n)
 
     from ase.io import read
-    from mattersim_benchmark.benchmark import MatterSimTester
+    from ea.analysis.benchmark_mattersim import MatterSimTester
 
     # Load structure and model
     atoms = read(args.structure)
-    tester = MatterSimTester(args.model, device=args.device)
+    tester = MatterSimTester(
+        args.model,
+        device=args.device,
+        container_root=args.container_root,
+        input_template=args.input_template,
+        n_threads=n,
+    )
 
     # Benchmark
     start = time.perf_counter()
@@ -48,8 +59,8 @@ def main():
         "initial_energy": float(result["initial_energy"]),
         "final_energy": float(result["final_energy"]),
         "total_steps": int(result["total_steps"]),
-        "fire_steps": int(result["fire_steps"]),
-        "lbfgs_steps": int(result["lbfgs_steps"]),
+        "fire_steps": result.get("fire_steps"),
+        "lbfgs_steps": result.get("lbfgs_steps"),
     }
 
     # Use a marker so the orchestrator can find the JSON line
