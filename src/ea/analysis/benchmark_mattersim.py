@@ -22,6 +22,21 @@ from ase.optimize import FIRE, LBFGS
 from ase.filters import FrechetCellFilter
 
 
+class _RelaxTimeout(Exception):
+    """Raised when relaxation exceeds the time limit."""
+    pass
+
+
+class _TimeoutChecker:
+    """Optimizer callback that raises _RelaxTimeout after a deadline."""
+    def __init__(self, deadline):
+        self.deadline = deadline
+
+    def __call__(self):
+        if time.monotonic() > self.deadline:
+            raise _RelaxTimeout("Relaxation exceeded time limit")
+
+
 class MatterSimTester:
     """Test MatterSim with a given trained model checkpoint and structure.
 
@@ -61,7 +76,7 @@ class MatterSimTester:
     # ------------------------------------------------------------------
 
     def relax(self, atoms, fire_fmax=0.10, fire_steps=500,
-              lbfgs_steps=1200, lbfgs_stages=None):
+              lbfgs_steps=1200, lbfgs_stages=None, timeout=None):
         """Relax a structure using FIRE followed by staged LBFGS.
 
         Parameters
@@ -76,13 +91,16 @@ class MatterSimTester:
             Max steps per LBFGS stage.
         lbfgs_stages : list[float] | None
             Successive fmax thresholds for LBFGS refinement.
+        timeout : float | None
+            Maximum wall-clock seconds for the relaxation.  ``None`` = no limit.
 
         Returns
         -------
-        dict with initial/final energies, step counts, and relaxed Atoms.
+        dict with initial/final energies, step counts, relaxed Atoms, and
+        a ``timed_out`` flag.
         """
         if self.container_root is not None:
-            return self._relax_container(atoms)
+            return self._relax_container(atoms, timeout=timeout)
 
         if lbfgs_stages is None:
             lbfgs_stages = [0.03, 0.01, 0.005, 0.002, 0.001]
@@ -92,27 +110,41 @@ class MatterSimTester:
 
         initial_energy = atoms.get_potential_energy()
 
-        # FIRE stage
-        fire = FIRE(
-            FrechetCellFilter(atoms, hydrostatic_strain=False, constant_volume=False),
-            logfile=None,
-            trajectory=None,
-            maxstep=0.03,
-        )
-        fire.run(fmax=fire_fmax, steps=fire_steps)
-        fire_steps_done = int(fire.nsteps)
+        checker = _TimeoutChecker(time.monotonic() + timeout) if timeout else None
+        timed_out = False
+        fire = None
+        lbfgs = None
 
-        # Staged LBFGS
-        lbfgs = LBFGS(
-            FrechetCellFilter(atoms, hydrostatic_strain=False, constant_volume=False),
-            logfile=None,
-            trajectory=None,
-            maxstep=0.03,
-            memory=40,
-        )
-        for stage_fmax in lbfgs_stages:
-            lbfgs.run(fmax=stage_fmax, steps=lbfgs_steps)
-        lbfgs_steps_done = int(lbfgs.nsteps)
+        try:
+            # FIRE stage
+            fire = FIRE(
+                FrechetCellFilter(atoms, hydrostatic_strain=False, constant_volume=False),
+                logfile=None,
+                trajectory=None,
+                maxstep=0.03,
+            )
+            if checker:
+                fire.attach(checker, interval=1)
+            fire.run(fmax=fire_fmax, steps=fire_steps)
+
+            # Staged LBFGS
+            lbfgs = LBFGS(
+                FrechetCellFilter(atoms, hydrostatic_strain=False, constant_volume=False),
+                logfile=None,
+                trajectory=None,
+                maxstep=0.03,
+                memory=40,
+            )
+            if checker:
+                lbfgs.attach(checker, interval=1)
+            for stage_fmax in lbfgs_stages:
+                lbfgs.run(fmax=stage_fmax, steps=lbfgs_steps)
+        except _RelaxTimeout:
+            timed_out = True
+            print(f"Relaxation timed out after {timeout}s, returning last atoms state")
+
+        fire_steps_done = int(fire.nsteps) if fire is not None else 0
+        lbfgs_steps_done = int(lbfgs.nsteps) if lbfgs is not None else 0
 
         return {
             "initial_energy": initial_energy,
@@ -121,6 +153,7 @@ class MatterSimTester:
             "lbfgs_steps": lbfgs_steps_done,
             "total_steps": fire_steps_done + lbfgs_steps_done,
             "relaxed_atoms": atoms,
+            "timed_out": timed_out,
         }
 
     # ------------------------------------------------------------------
@@ -134,19 +167,16 @@ class MatterSimTester:
                 return name
         raise RuntimeError("Neither 'singularity' nor 'apptainer' found in PATH.")
 
-    def _relax_container(self, atoms):
+    def _relax_container(self, atoms, timeout=None):
         root = self.container_root
         sif = root / "containers" / "ml-relax-cpu.sif"
         if not sif.is_file():
             raise FileNotFoundError(f"SIF image not found: {sif}")
 
-        tmpdir = Path(tempfile.mkdtemp(dir=root, prefix="relax_"))
+        tmpdir = Path(tempfile.mkdtemp(dir=Path.cwd(), prefix="relax_"))
         try:
             struct_path = tmpdir / "input.cif"
             write(str(struct_path), atoms)
-
-            container_struct = f"/work/{tmpdir.name}/input.cif"
-            container_outdir = f"/work/{tmpdir.name}/out"
 
             runtime = self._container_runtime()
             n = str(self.n_threads)
@@ -166,16 +196,38 @@ class MatterSimTester:
             cmd = [
                 runtime, "exec",
                 "--bind", f"{root}:/work",
+                "--bind", f"{tmpdir}:/tmprelax",
                 str(sif),
                 "python", "/work/runner/ml_relax_cli.py",
                 "--input-script", f"/work/templates/{self.input_template}",
-                "--structure", container_struct,
+                "--structure", "/tmprelax/input.cif",
                 "--models-dir", "/work/models",
                 "--device", self.device,
-                "--outdir", container_outdir,
+                "--outdir", "/tmprelax/out",
             ]
 
-            proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
+            try:
+                proc = subprocess.run(cmd, env=env, capture_output=True, text=True,
+                                      timeout=timeout)
+            except subprocess.TimeoutExpired:
+                print(f"Container relaxation timed out after {timeout}s")
+                relaxed_atoms = self._read_last_traj_frame(tmpdir / "out", atoms)
+                energy = 0
+                try:
+                    energy = relaxed_atoms.get_potential_energy()
+                except Exception:
+                    pass
+                return {
+                    "initial_energy": None,
+                    "final_energy": energy,
+                    "fire_steps": None,
+                    "lbfgs_steps": None,
+                    "total_steps": None,
+                    "relaxed_atoms": relaxed_atoms,
+                    "fmax_final": None,
+                    "runtime_s": timeout,
+                    "timed_out": True,
+                }
 
             result_json_path = tmpdir / "out" / "result.json"
             if not result_json_path.is_file():
@@ -203,9 +255,36 @@ class MatterSimTester:
                 "relaxed_atoms": relaxed_atoms,
                 "fmax_final": result_data.get("fmax_final_eV_A"),
                 "runtime_s": result_data.get("runtime_s"),
+                "timed_out": False,
             }
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
+
+    @staticmethod
+    def _read_last_traj_frame(outdir, fallback_atoms):
+        """Read the last frame from any .traj file in *outdir*.
+
+        Falls back to *fallback_atoms* if no trajectory is found or
+        the file is unreadable (e.g. partial write after a kill).
+        """
+        from ase.io.trajectory import Trajectory
+
+        outdir = Path(outdir)
+        if not outdir.is_dir():
+            return fallback_atoms
+
+        traj_files = sorted(outdir.glob("*.traj"))
+        for traj_path in reversed(traj_files):
+            try:
+                traj = Trajectory(str(traj_path))
+                if len(traj) > 0:
+                    last = traj[-1]
+                    traj.close()
+                    return last
+                traj.close()
+            except Exception:
+                continue
+        return fallback_atoms
 
 
 # ---------------------------------------------------------------------------
