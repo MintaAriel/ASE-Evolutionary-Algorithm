@@ -1,4 +1,5 @@
 from ea.analysis.benchmark_mattersim import MatterSimTester
+from ea.utils.config import load_config
 from ase.atoms import Atoms
 from ase.io import read, write
 from ase.visualize import view
@@ -26,13 +27,15 @@ def pick_input() -> str:
 
 atoms = pick_input()
 
+cfg = load_config()
+ms = cfg['mattersim']
 
 tester = MatterSimTester(
-    model_path='/home/vito/PythonProjects/ASEProject/EA/models/tuned_mattersim_12.03.2026.pth',
-    device='cpu',
-    container_root='/home/vito/PythonProjects/ASEProject/container_cpu_2',
-    input_template='input_mattersim_d3_short.py',
-    n_threads=4 ,
+    model_path=ms['model_path'],
+    device=ms.get('device', 'cpu'),
+    container_root=ms['container_root'],
+    input_template=ms.get('input_template', 'input_mattersim_d3_short.py'),
+    n_threads=ms.get('n_threads', 4),
 )
 
 

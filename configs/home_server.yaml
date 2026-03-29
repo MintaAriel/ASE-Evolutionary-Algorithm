@@ -1,17 +1,23 @@
 project:
-  name: ASE-Evolutionary-Algorithm 
+  name: ASE-Evolutionary-Algorithm
 
 paths:
   data_dir: ./data
   test_dir: ./tests
   models_dir: ./models
-  
+
 executables:
   gulp_dir: ~/Programs/gulp-6.4/Src/gulp
 
 simulation:
   engine: mattersim
 
+mattersim:
+  container_root: /home/genesis/PycharmProjects/container_cpu_2
+  model_path: /home/genesis/PycharmProjects/container_cpu_2/models/tuned_mattersim_12.03.2026.pth
+  device: cpu
+  input_template: input_mattersim_d3_short.py
+  n_threads: 4
 
 env:
   conda_env: ase_env
