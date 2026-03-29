@@ -32,7 +32,7 @@ tester = MatterSimTester(
     device='cpu',
     container_root='/home/vito/PythonProjects/ASEProject/container_cpu_2',
     input_template='input_mattersim_d3_short.py',
-    n_threads=5,
+    n_threads=4 ,
 )
 
 
