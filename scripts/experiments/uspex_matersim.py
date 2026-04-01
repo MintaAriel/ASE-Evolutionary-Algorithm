@@ -43,7 +43,7 @@ tester = MatterSimTester(
 print(atoms)
 
 try:
-    result = tester.relax(atoms, timeout=300)
+    result = tester.relax(atoms, timeout=100)
     relaxed_atoms = result['relaxed_atoms']
     energy = result['final_energy']
     print('the relaxed structure', relaxed_atoms)
