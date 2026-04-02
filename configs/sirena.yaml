@@ -1,2 +1,24 @@
-s
+project:
+  name: ASEProject
+
+paths:
+  data_dir: ./data
+  test_dir: ./tests
+  models_dir: ./models
+
+executables:
+  gulp_dir: /home/sirena/Brian/gulp-6.4/Src/gulp
+
+simulation:
+  engine: mattersim
+
+mattersim:
+  container_root: /home/sirena/Brian/container_cpu_2
+  model_path: ./models/tuned_mattersim_12.03.2026.pth
+  device: cpu
+  input_template: input_mattersim_d3_short.py
+  n_threads: 4
+
+env:
+  conda_env: brian_ase_env
 
