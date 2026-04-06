@@ -58,12 +58,18 @@ class MatterSimTester:
     """
 
     def __init__(self, model_path, device="cpu", container_root=None,
-                 input_template="input_mattersim_d3.py", n_threads=4):
+                 input_template="input_mattersim_d3.py", n_threads=4,
+                 sif_name="ml-relax-cpu.sif", method=None, model_key=None,
+                 params=None):
         self.model_path = str(model_path)
         self.device = device
         self.container_root = Path(container_root) if container_root else None
         self.input_template = input_template
         self.n_threads = n_threads
+        self.sif_name = sif_name
+        self.method = method
+        self.model_key = model_key
+        self.params = params
 
         if self.container_root is None:
             from mattersim.forcefield import MatterSimCalculator
@@ -76,7 +82,8 @@ class MatterSimTester:
     # ------------------------------------------------------------------
 
     def relax(self, atoms, fire_fmax=0.10, fire_steps=500,
-              lbfgs_steps=1200, lbfgs_stages=None, timeout=None):
+              lbfgs_steps=1200, lbfgs_stages=None, timeout=None,
+              outdir=None):
         """Relax a structure using FIRE followed by staged LBFGS.
 
         Parameters
@@ -93,6 +100,10 @@ class MatterSimTester:
             Successive fmax thresholds for LBFGS refinement.
         timeout : float | None
             Maximum wall-clock seconds for the relaxation.  ``None`` = no limit.
+        outdir : str or Path or None
+            When given (container mode), the container writes its output
+            files (result.json, final.cif, etc.) directly to this directory.
+            When *None*, a temporary directory is used and cleaned up.
 
         Returns
         -------
@@ -100,7 +111,7 @@ class MatterSimTester:
         a ``timed_out`` flag.
         """
         if self.container_root is not None:
-            return self._relax_container(atoms, timeout=timeout)
+            return self._relax_container(atoms, timeout=timeout, outdir=outdir)
 
         if lbfgs_stages is None:
             lbfgs_stages = [0.03, 0.01, 0.005, 0.002, 0.001]
@@ -167,11 +178,18 @@ class MatterSimTester:
                 return name
         raise RuntimeError("Neither 'singularity' nor 'apptainer' found in PATH.")
 
-    def _relax_container(self, atoms, timeout=None):
+    def _relax_container(self, atoms, timeout=None, outdir=None):
         root = self.container_root
-        sif = root / "containers" / "ml-relax-cpu.sif"
+        sif = root / "containers" / self.sif_name
         if not sif.is_file():
             raise FileNotFoundError(f"SIF image not found: {sif}")
+
+        # When outdir is provided, container output persists there.
+        # A small tmpdir is still needed for the input structure.
+        persist_output = outdir is not None
+        if persist_output:
+            host_outdir = Path(outdir).resolve()
+            host_outdir.mkdir(parents=True, exist_ok=True)
 
         tmpdir = Path(tempfile.mkdtemp(dir=Path.cwd(), prefix="relax_"))
         try:
@@ -193,25 +211,49 @@ class MatterSimTester:
             env["DP_INTER_OP_PARALLELISM_THREADS"] = "1"
             env["SINGULARITYENV_DP_INTER_OP_PARALLELISM_THREADS"] = "1"
 
+            nv_flag = "--nv" if self.device == "cuda" else None
+
             cmd = [
                 runtime, "exec",
+            ]
+            if nv_flag:
+                cmd.append(nv_flag)
+
+            bind_args = [
                 "--bind", f"{root}:/work",
                 "--bind", f"{tmpdir}:/tmprelax",
+            ]
+            if persist_output:
+                bind_args += ["--bind", f"{host_outdir}:/hostout"]
+                container_outdir = "/hostout"
+            else:
+                container_outdir = "/tmprelax/out"
+
+            cmd += bind_args + [
                 str(sif),
                 "python", "/work/runner/ml_relax_cli.py",
                 "--input-script", f"/work/templates/{self.input_template}",
                 "--structure", "/tmprelax/input.cif",
                 "--models-dir", "/work/models",
                 "--device", self.device,
-                "--outdir", "/tmprelax/out",
+                "--outdir", container_outdir,
             ]
+            if self.method:
+                cmd += ["--method", self.method]
+            if self.model_key:
+                cmd += ["--model-key", self.model_key]
+            if self.params:
+                cmd += ["--params", json.dumps(self.params) if isinstance(self.params, dict) else self.params]
+
+            # Determine host-side output path for reading results
+            host_result_dir = host_outdir if persist_output else tmpdir / "out"
 
             try:
                 proc = subprocess.run(cmd, env=env, capture_output=True, text=True,
                                       timeout=timeout)
             except subprocess.TimeoutExpired:
                 print(f"Container relaxation timed out after {timeout}s")
-                relaxed_atoms = self._read_last_traj_frame(tmpdir / "out", atoms)
+                relaxed_atoms = self._read_last_traj_frame(host_result_dir, atoms)
                 energy = 0
                 try:
                     energy = relaxed_atoms.get_potential_energy()
@@ -229,7 +271,7 @@ class MatterSimTester:
                     "timed_out": True,
                 }
 
-            result_json_path = tmpdir / "out" / "result.json"
+            result_json_path = host_result_dir / "result.json"
             if not result_json_path.is_file():
                 raise RuntimeError(
                     f"Container produced no result.json (rc={proc.returncode}).\n"
@@ -243,7 +285,7 @@ class MatterSimTester:
                     f"Container relaxation failed: {result_data.get('error')}"
                 )
 
-            relaxed_atoms = read(str(tmpdir / "out" / "final.cif"))
+            relaxed_atoms = read(str(host_result_dir / "final.cif"))
             relax_info = result_data.get("relax_info", {})
 
             return {

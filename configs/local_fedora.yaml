@@ -5,6 +5,7 @@ paths:
   data_dir: ./data
   test_dir: ./tests
   models_dir: ./models
+  results_dir: ./results
 
 executables:
   gulp_dir: ~/Programs/gulp-6.4/Src/gulp
@@ -14,6 +15,7 @@ simulation:
 
 mattersim:
   container_root: /home/vito/PythonProjects/ASEProject/container_cpu_2
+  container_root_gpu: /home/vito/PythonProjects/ASEProject/container_gpu_2
   model_path: /home/vito/PythonProjects/ASEProject/EA/models/tuned_mattersim_12.03.2026.pth
   device: cpu
   input_template: input_mattersim_d3_short.py
