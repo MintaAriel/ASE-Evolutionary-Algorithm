@@ -35,7 +35,7 @@ tester = MatterSimTester(
     sif_name='ml-relax-gpu.sif',
     method='deepmd_d3',
     model_key='base_deepmd',
-    params={"fire_steps": 100, "lbfgs_stages": [0.03], "lbfgs_steps": 100},
+    #params={"fire_steps": 100, "lbfgs_stages": [0.03], "lbfgs_steps": 100},
 )
 
 all_energies = {}

@@ -83,7 +83,7 @@ class MatterSimTester:
 
     def relax(self, atoms, fire_fmax=0.10, fire_steps=500,
               lbfgs_steps=1200, lbfgs_stages=None, timeout=None,
-              outdir=None):
+              outdir=None, cpu_affinity=None):
         """Relax a structure using FIRE followed by staged LBFGS.
 
         Parameters
@@ -104,6 +104,10 @@ class MatterSimTester:
             When given (container mode), the container writes its output
             files (result.json, final.cif, etc.) directly to this directory.
             When *None*, a temporary directory is used and cleaned up.
+        cpu_affinity : list[int] | None
+            CPU core IDs to pin the container process to (e.g. [0,1,2,3]).
+            Thread count is automatically set to len(cpu_affinity).
+            Container mode only.
 
         Returns
         -------
@@ -111,7 +115,8 @@ class MatterSimTester:
         a ``timed_out`` flag.
         """
         if self.container_root is not None:
-            return self._relax_container(atoms, timeout=timeout, outdir=outdir)
+            return self._relax_container(atoms, timeout=timeout, outdir=outdir,
+                                         cpu_affinity=cpu_affinity)
 
         if lbfgs_stages is None:
             lbfgs_stages = [0.03, 0.01, 0.005, 0.002, 0.001]
@@ -178,7 +183,7 @@ class MatterSimTester:
                 return name
         raise RuntimeError("Neither 'singularity' nor 'apptainer' found in PATH.")
 
-    def _relax_container(self, atoms, timeout=None, outdir=None):
+    def _relax_container(self, atoms, timeout=None, outdir=None, cpu_affinity=None):
         root = self.container_root
         sif = root / "containers" / self.sif_name
         if not sif.is_file():
@@ -197,7 +202,7 @@ class MatterSimTester:
             write(str(struct_path), atoms)
 
             runtime = self._container_runtime()
-            n = str(self.n_threads)
+            n = str(len(cpu_affinity)) if cpu_affinity else str(self.n_threads)
 
             env = os.environ.copy()
             thread_vars = [
@@ -208,14 +213,18 @@ class MatterSimTester:
             for var in thread_vars:
                 env[var] = n
                 env[f"SINGULARITYENV_{var}"] = n
+                env[f"APPTAINERENV_{var}"] = n
             env["DP_INTER_OP_PARALLELISM_THREADS"] = "1"
             env["SINGULARITYENV_DP_INTER_OP_PARALLELISM_THREADS"] = "1"
+            env["APPTAINERENV_DP_INTER_OP_PARALLELISM_THREADS"] = "1"
 
             nv_flag = "--nv" if self.device == "cuda" else None
 
-            cmd = [
-                runtime, "exec",
-            ]
+            cmd = []
+            if cpu_affinity:
+                cores_str = ",".join(str(c) for c in cpu_affinity)
+                cmd += ["taskset", "-c", cores_str]
+            cmd += [runtime, "exec"]
             if nv_flag:
                 cmd.append(nv_flag)
 

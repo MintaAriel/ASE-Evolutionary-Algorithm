@@ -14,7 +14,7 @@ simulation:
   engine: mattersim
 
 mattersim:
-  container_root: /home/vito/PythonProjects/ASEProject/container_cpu_2
+  container_root_cpu: /home/vito/PythonProjects/ASEProject/container_cpu_2
   container_root_gpu: /home/vito/PythonProjects/ASEProject/container_gpu_2
   model_path: /home/vito/PythonProjects/ASEProject/EA/models/tuned_mattersim_12.03.2026.pth
   device: cpu
