@@ -6,6 +6,7 @@ from ea.analysis.benchmark_mattersim import MatterSimTester
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import json
+import time
 
 cfg = load_config()
 pths = cfg['paths']
@@ -25,16 +26,11 @@ tests = [#'collected_theophylline_0',
          'theophylline_uspex']
 
 test_to_try = [26]
-structures_id = [1,2,3,4,5,6]
-
+structures_id = list(range(1, 11))
 # CPU core affinity per structure: structure_id -> list of core IDs
 core_affinity = {
-    1: [0, 1],
-    2: [2, 3],
-    3: [4,5],
-    4: [6,7],
-    5: [8,9],
-    6: [10,11],
+    k: [2*(k-1), 2*(k-1) + 1]
+    for k in structures_id
 }
 
 # Use CPU container with deepmd_template and deepmd_d3 method
@@ -87,6 +83,8 @@ for name in tests:
                 affinity = core_affinity.get(k)
                 future = pool.submit(relax_one, tester, v, struct_dir, affinity)
                 futures[future] = k
+                time.sleep(1)  # ← delay between submissions
+
 
             energies = {}
             for future in as_completed(futures):
