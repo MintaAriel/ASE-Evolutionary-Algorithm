@@ -2,35 +2,34 @@ from phonopy import load
 from phonopy import Phonopy
 from phonopy.structure.atoms import PhonopyAtoms
 import numpy as np
+from phonopy.units import THzToEv
 
 # Load from YAML (everything inside)
 # phonon = load("/home/vito/PythonProjects/ASEProject/EA/test/phonopy/python/phonopy_params_relaxed2.yaml")
 phonon = load('/home/vito/PythonProjects/ASEProject/EA/test/phonopy/python/phonopy_params_cuda.yaml')
 
 # 1. Mesh (ALWAYS required first)
-phonon.run_mesh([20, 20, 20], with_eigenvectors=True)
 
-# 2. DOS
-# phonon.run_total_dos()
-# phonon.plot_total_dos(with_tight_frequency_range=False).show()
-band_paths = [
-    [[0, 0, 0], [0.5, 0, 0]],
-    [[0.5, 0, 0], [0.5, 0.5, 0]],
-    [[0.5, 0.5, 0], [0, 0, 0]]
-]
-# phonon.run_band_structure(band_paths, with_eigenvectors=True)
-# phonon.plot_band_structure().show()
+
 phonon.symmetry
-phonon.auto_band_structure()
-phonon.plot_band_structure().show()
 
-freqs = phonon._mesh.frequencies
-eigenvectors = phonon._mesh.eigenvectors
 
-print(freqs.min())
+phonon.run_mesh([4, 4, 4], with_eigenvectors=True)
+phonon.run_total_dos()
 
-print(freqs)
-print(eigenvectors)
+dos_obj = phonon._total_dos
+print(type(dos_obj))
+print(dos_obj)
+print(dir(dos_obj))
+
+omega = dos_obj._frequency_points
+g = dos_obj._dos
+
+zpe = 0.5 * np.trapezoid(g * omega, omega)
+print(np.trapezoid(g, omega))
+print(zpe)
+
+# print(eigenvectors)
 
 from ase.visualize import view
 
@@ -78,3 +77,17 @@ mode_index = 30
 #
 # # 4. Now plotting works
 # phonon.plot_band_structure_and_dos()
+
+# 2. DOS
+# phonon.run_total_dos()
+# phonon.plot_total_dos(with_tight_frequency_range=False).show()
+# band_paths = [
+#     [[0, 0, 0], [0.5, 0, 0]],
+#     [[0.5, 0, 0], [0.5, 0.5, 0]],
+#     [[0.5, 0.5, 0], [0, 0, 0]]
+# ]
+
+# phonon.run_band_structure(band_paths, with_eigenvectors=True)
+# phonon.plot_band_structure().show()
+# phonon.auto_band_structure()
+# phonon.plot_band_structure().show()

@@ -20,6 +20,8 @@ class RelaxConfig:
     lbfgs_stages: tuple = (0.03, 0.01, 0.005, 0.002, 0.001)
     lbfgs_steps: int = 1200
     maxstep: float = 0.03
+    threads: int = 2
+    cores: list[int] | None = None
 
 MODELS = {
     'base_deepmd': 'dpa3_12.03.2026.pth',
@@ -43,8 +45,15 @@ class DeepMDRelaxation:
     def __init__(self, config: RelaxConfig):
         self.cfg = config
 
-    def build_calculator(self, models_dir, device, threads):
+    def build_calculator(self, models_dir, device, threads=None):
         model_path, _ = resolve_model(models_dir, self.cfg.model_key)
+
+        cores = self.cfg.cores
+        nthreads = threads if threads is not None else self.cfg.threads
+        if cores is not None:
+            os.sched_setaffinity(0, cores)
+            print(f"CPU affinity set to cores: {cores}")
+
         # DeepMD's pt backend captures env.DEVICE at import time via many
         # `from deepmd.pt.utils.env import DEVICE` statements. Patch env.DEVICE
         # and every already-imported deepmd.pt.* module that holds a DEVICE name.
@@ -61,7 +70,7 @@ class DeepMDRelaxation:
             ):
                 mod.DEVICE = target
         calc = DP(model=str(model_path), device=device)
-        torch.set_num_threads(threads)  # DP() resets threads to 1
+        torch.set_num_threads(nthreads)  # DP() resets threads to 1
 
         # Force every submodule/buffer onto the target device. torch.jit.load's
         # map_location doesn't always migrate tensors that are constructed inside
@@ -82,9 +91,9 @@ class DeepMDRelaxation:
             print(f"(device check skipped: {e})")
         return calc
 
-    def run(self, atoms, ctx):
-        log_path = ctx.outdir / "relax.log"
-        traj_path = ctx.outdir / "opt.traj"
+    def run(self, atoms, out_dir):
+        log_path = out_dir / "relax.log"
+        traj_path = out_dir / "opt.traj"
 
         # FIRE stage
         fire = FIRE(
@@ -108,10 +117,13 @@ class DeepMDRelaxation:
         for fmax in self.cfg.lbfgs_stages:
             lbfgs.run(fmax=fmax, steps=self.cfg.lbfgs_steps)
 
+        energy = atoms.get_potential_energy()
+
         return {
             "optimizer": "fire_then_staged_lbfgs",
             "nsteps": int(fire.nsteps + lbfgs.nsteps),
             "lbfgs_stages": list(self.cfg.lbfgs_stages),
+            "energy":energy
         }
 
 
