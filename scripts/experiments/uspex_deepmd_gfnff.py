@@ -48,6 +48,12 @@ print("CWD at start:", os.getcwd())
 #                               library=None,
 #                               gulp_keywords=gulp_input,
 #                               gulp_options=options)
+
+
+cfg = load_config()
+
+gulp_exe = cfg["executables"]["gulp_dir"]
+
 calculator_gulp = GULP(keywords=gulp_input,
                     # goutput file parameters from USPEX
                     options=[options.strip()],
@@ -59,11 +65,11 @@ calculator_gulp.directory = os.getcwd()
 id = get_folder_id()
 start_core = 0
 threads = 2
-if id:
-    calculator_gulp.command = f'taskset -c {int((id * threads) + start_core)} gulp <gulp.gin> gulp.got'
+if id is not None:
+    calculator_gulp.command = f'taskset -c {int((id * threads) + start_core)} {gulp_exe} <gulp.gin> gulp.got'
     config = RelaxConfig(threads=2, cores=[id*threads + start_core, id*threads-1 +start_core])
 else:
-    calculator_gulp.command = f'gulp <gulp.gin> gulp.got'
+    calculator_gulp.command = f'{gulp_exe} <gulp.gin> gulp.got'
 
     config = RelaxConfig(threads=2)
 
@@ -85,7 +91,7 @@ def pick_input() -> str:
 
 crystal = pick_input()
 
-cfg = load_config()
+
 ms = cfg['deepmd']
 MODELS = ms['models_path']
 
@@ -106,7 +112,7 @@ try:
     deep = DeepMDRelaxation(config)
     deep.model_key = 'deepmd_d3'
     calc_deep = deep.build_calculator(models_dir=Path(MODELS),
-                                 device='cuda')
+                                 device='cpu')
 
     crystal.calc = calc_deep
     results_deeep = deep.run(crystal, Path(os.getcwd()))

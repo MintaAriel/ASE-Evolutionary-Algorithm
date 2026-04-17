@@ -141,9 +141,15 @@ def wait_for_uspex_x(workdir):
 def run_uspex_resume(workdir, log_file, uspex_cmd="USPEX"):
     """Call ``<uspex_cmd> -r`` and append its output to *log_file*."""
     log.info("Running %s -r", uspex_cmd)
+    env = os.environ.copy()
+    env["MYUSPEXPATH"] = "/home/sirena/Brian/uspex-matlab/application/archive/src"
+    env["USPEXPATH"] = "/home/sirena/Brian/uspex-matlab/application/archive/src"
+    env["MCRROOT"] = "/home/sirena/Brian/uspex-matlab"
+
     result = subprocess.run(
         [uspex_cmd, "-r"],
         cwd=workdir,
+        env = env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         universal_newlines=True,

@@ -9,6 +9,7 @@ paths:
 
 executables:
   gulp_dir: /home/sirena/Brian/gulp-6.4/Src/gulp
+  gulp_lib: /home/sirena/Brian/gulp-6.4/Libraries
 
 simulation:
   engine: mattersim
@@ -20,6 +21,12 @@ mattersim:
   device: cpu
   input_template: input_mattersim_d3_short.py
   n_threads: 4
+
+deepmd:
+  conda_env: deepmd_env
+  models_path: /home/sirena/Brian/container_gpu/models
+  device: cpu
+  model_key: base_deepmd
 
 env:
   conda_env: brian_ase_env

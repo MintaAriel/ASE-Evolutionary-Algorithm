@@ -2,11 +2,9 @@
 from __future__ import annotations
 
 import os
-import torch
 from ase.calculators.mixing import SumCalculator
 from ase.filters import FrechetCellFilter
 from ase.optimize import FIRE, LBFGS
-from deepmd.calculator import DP
 from dataclasses import dataclass
 from pathlib import Path
 #
@@ -38,6 +36,21 @@ def resolve_model(models_dir: Path, key: str) -> tuple[Path, str]:
         raise FileNotFoundError(f"Model not found: {path}")
     return path, key
 
+def configure_cpu_runtime(cores: list[int], nthreads: int) -> None:
+    # Restrict this process to the requested CPUs
+    os.sched_setaffinity(0, set(cores))
+
+    # Threading env vars for OpenMP / MKL / DeePMD / BLAS
+    os.environ["OMP_NUM_THREADS"] = str(nthreads)
+    os.environ["MKL_NUM_THREADS"] = str(nthreads)
+    os.environ["OPENBLAS_NUM_THREADS"] = str(nthreads)
+    os.environ["NUMEXPR_NUM_THREADS"] = str(nthreads)
+
+    # DeePMD CPU parallelism
+    os.environ["DP_INTRA_OP_PARALLELISM_THREADS"] = str(nthreads)
+    os.environ["DP_INTER_OP_PARALLELISM_THREADS"] = "1"
+
+
 
 class DeepMDRelaxation:
     """Bare DeepMD model — no ASE-level dispersion correction."""
@@ -46,18 +59,32 @@ class DeepMDRelaxation:
         self.cfg = config
 
     def build_calculator(self, models_dir, device, threads=None):
-        model_path, _ = resolve_model(models_dir, self.cfg.model_key)
+
 
         cores = self.cfg.cores
         nthreads = threads if threads is not None else self.cfg.threads
-        if cores is not None:
-            os.sched_setaffinity(0, cores)
-            print(f"CPU affinity set to cores: {cores}")
 
-        # DeepMD's pt backend captures env.DEVICE at import time via many
-        # `from deepmd.pt.utils.env import DEVICE` statements. Patch env.DEVICE
-        # and every already-imported deepmd.pt.* module that holds a DEVICE name.
+        configure_cpu_runtime(cores, nthreads)
+
+        # Import only after affinity + env are set
+        import torch
+        from deepmd.calculator import DP
         import sys
+
+        print("CPU affinity now:", sorted(os.sched_getaffinity(0)))
+        print("OMP_NUM_THREADS =", os.environ.get("OMP_NUM_THREADS"))
+        print("MKL_NUM_THREADS =", os.environ.get("MKL_NUM_THREADS"))
+        print("DP_INTRA_OP_PARALLELISM_THREADS =", os.environ.get("DP_INTRA_OP_PARALLELISM_THREADS"))
+        print("DP_INTER_OP_PARALLELISM_THREADS =", os.environ.get("DP_INTER_OP_PARALLELISM_THREADS"))
+
+        # PyTorch thread pools
+        torch.set_num_threads(nthreads)
+        torch.set_num_interop_threads(1)
+
+        print("torch.get_num_threads() =", torch.get_num_threads())
+        print("torch.get_num_interop_threads() =", torch.get_num_interop_threads())
+
+        model_path, _ = resolve_model(models_dir, self.cfg.model_key)
         target = torch.device("cpu") if device == "cpu" else torch.device("cuda")
         os.environ["DEVICE"] = "cpu" if device == "cpu" else "cuda"
         from deepmd.pt.utils import env as _dpenv
@@ -69,6 +96,7 @@ class DeepMDRelaxation:
                 getattr(mod, "DEVICE"), torch.device
             ):
                 mod.DEVICE = target
+
         calc = DP(model=str(model_path), device=device)
         torch.set_num_threads(nthreads)  # DP() resets threads to 1
 
