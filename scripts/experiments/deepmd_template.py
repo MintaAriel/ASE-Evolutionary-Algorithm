@@ -46,6 +46,14 @@ def configure_cpu_runtime(cores: list[int], nthreads: int) -> None:
     os.environ["OPENBLAS_NUM_THREADS"] = str(nthreads)
     os.environ["NUMEXPR_NUM_THREADS"] = str(nthreads)
 
+    # Pin OpenMP worker threads to the assigned cores so they don't escape
+    # the sched_setaffinity mask (libgomp / MKL otherwise spread to all cores).
+    cores_csv = ",".join(str(c) for c in cores)
+    os.environ["OMP_PROC_BIND"] = "close"
+    os.environ["OMP_PLACES"] = f"{{{cores_csv}}}"
+    os.environ["GOMP_CPU_AFFINITY"] = cores_csv
+    os.environ["KMP_AFFINITY"] = f"granularity=fine,proclist=[{cores_csv}],explicit"
+
     # DeePMD CPU parallelism
     os.environ["DP_INTRA_OP_PARALLELISM_THREADS"] = str(nthreads)
     os.environ["DP_INTER_OP_PARALLELISM_THREADS"] = "1"

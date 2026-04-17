@@ -1,3 +1,37 @@
+# --- CPU pinning: must happen BEFORE numpy/ase/torch import so libgomp/MKL
+#     pick up OMP_PROC_BIND etc. Uses only stdlib to stay import-safe.
+import os
+import re
+
+def _early_get_folder_id():
+    folder_name = os.path.basename(os.getcwd())
+    match = re.search(r'(\d+)$', folder_name)
+    return int(match.group(1)) if match else None
+
+def _early_pin_cpus():
+    _id = _early_get_folder_id()
+    if _id is None:
+        return
+    start_core = 0
+    threads = 2
+    cores = [_id * threads + start_core, _id * threads - 1 + start_core]
+    cores_csv = ",".join(str(c) for c in cores)
+    # Restrict the process mask now; new threads inherit it.
+    os.sched_setaffinity(0, set(cores))
+    # Thread counts
+    for k in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
+              "NUMEXPR_NUM_THREADS", "DP_INTRA_OP_PARALLELISM_THREADS"):
+        os.environ[k] = str(threads)
+    os.environ["DP_INTER_OP_PARALLELISM_THREADS"] = "1"
+    # Keep OMP / MKL workers inside the assigned cores
+    os.environ["OMP_PROC_BIND"] = "close"
+    os.environ["OMP_PLACES"] = f"{{{cores_csv}}}"
+    os.environ["GOMP_CPU_AFFINITY"] = cores_csv
+    os.environ["KMP_AFFINITY"] = f"granularity=fine,proclist=[{cores_csv}],explicit"
+
+_early_pin_cpus()
+# --- end early pinning ---
+
 from ea.utils.config import load_config
 from ase.atoms import Atoms
 from ase.io import read, write
@@ -6,17 +40,13 @@ import shutil
 from pathlib import Path
 # from pygulp.relaxation.relax import Gulp_relaxation_noadd
 from deepmd_template import DeepMDRelaxation, RelaxConfig
-import os
 import time
 from ase.calculators.gulp import GULP, GULPOptimizer
 from ase.vibrations import Vibrations
-import re
 
 
 def get_folder_id():
-    folder_name = os.path.basename(os.getcwd())
-    match = re.search(r'(\d+)$', folder_name)  # integer at the end
-    return int(match.group(1)) if match else None
+    return _early_get_folder_id()
 
 def phonons_at_gamma(out_dir, atoms):
     vib_dir =  Path(out_dir) / 'vib'
