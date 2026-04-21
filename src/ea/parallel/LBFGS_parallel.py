@@ -14,6 +14,7 @@ from ase.stress import full_3x3_to_voigt_6_stress
 from .create_batch import  build_batch_deepmd
 from ase.io import write
 from pathlib import Path
+from ase.io.trajectory import Trajectory
 import warnings
 warnings.filterwarnings("ignore", message=r"logm result may be inaccurate.*")
 
@@ -177,8 +178,9 @@ class ParallelLBFGS:
 
         for step in range(self.max_steps):
             if step % 50 == 0:
-                out_directory = Path(out_dir) / 'output.traj'
-                write(out_directory, self.get_atoms())
+                out_file = Path(out_dir) / "output.traj"
+                print("Writing to:", Path(out_dir) / "output.traj")
+                write(out_file, self.get_atoms())  # overwrite
 
             self.nsteps_done = step + 1
             done = self.step()
