@@ -3,6 +3,7 @@ from deepmd_template import DeepMDRelaxation, RelaxConfig
 from phonopy import Phonopy
 from phonopy.structure.atoms import PhonopyAtoms
 from pathlib import Path
+import shutil
 import time
 from ase.io import read
 from ase.vibrations import Vibrations
@@ -10,7 +11,7 @@ from ase.phonons import Phonons
 from ase.thermochemistry import CrystalThermo
 from ase.build import make_supercell
 
-config = RelaxConfig()
+config = RelaxConfig(cores=[1,2,3])
 
 deep = DeepMDRelaxation(config)
 deep.model_key = 'deepmd_d3'
@@ -18,7 +19,7 @@ calc = deep.build_calculator(models_dir=Path('/home/vito/PythonProjects/ASEProje
                              device='cuda',
                              threads=2)
 
-cif_path = '/home/vito/PythonProjects/ASEProject/container_gpu_2/Results/128707/deepmd_d3_in/final.cif'
+cif_path = '/home/vito/PythonProjects/ASEProject/EA/data/theophylline/cif/str_18_POSCARS'
 
 atom = read(cif_path)
 atom.calc =calc
@@ -27,6 +28,8 @@ out_dir = Path('/home/vito/PythonProjects/ASEProject/EA/test/phonopy')
 def phonons_at_gamma():
 
     vib_dir =  out_dir / 'vib'
+    if vib_dir.exists() and vib_dir.is_dir():
+        shutil.rmtree(vib_dir)
     vib = Vibrations(atom, name= vib_dir)
     vib.run()
     vib.summary()

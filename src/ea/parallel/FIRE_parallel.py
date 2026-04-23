@@ -1,10 +1,9 @@
-from .create_batch import build_batch_deepmd
 from dataclasses import dataclass
 from typing import IO, Any
 from ase.filters import FrechetCellFilter
 from ase.calculators.singlepoint import SinglePointCalculator
-from ase.stress import full_3x3_to_voigt_6_stress
 from collections.abc import Callable
+import warnings
 import numpy as np
 
 
@@ -29,28 +28,33 @@ class FIREState:
     fmax_current: float | None = None
 
 
-def _inject_results(atoms, energy, forces, virial):
-    """Attach a SinglePointCalculator carrying the batched DP results so
+def _inject_results(atoms, energy, forces, stress_voigt):
+    """Attach a SinglePointCalculator carrying the batched results so
     FrechetCellFilter.get_forces() / atoms.get_stress() return them.
 
-    DP's virial v satisfies stress = -v / volume (ASE sign convention).
+    stress_voigt must already be in ASE sign convention, Voigt-6.
     """
-    volume = atoms.get_volume()
-    stress_3x3 = -np.asarray(virial).reshape(3, 3) / volume
-    # symmetrize for robustness then fold to Voigt-6
-    stress_3x3 = 0.5 * (stress_3x3 + stress_3x3.T)
-    stress_voigt = full_3x3_to_voigt_6_stress(stress_3x3)
     atoms.calc = SinglePointCalculator(
         atoms,
         energy=float(np.asarray(energy).ravel()[0]),
         forces=np.asarray(forces).reshape(-1, 3),
-        stress=stress_voigt,
+        stress=np.asarray(stress_voigt).reshape(6),
     )
 
 
 class ParallelFIRE:
-    """FIRE optimizer that batches force/energy/stress evaluations across
-    multiple ase.Atoms objects via a single deepmd calculator call per step.
+    """Backend-agnostic FIRE optimizer that batches force/energy/stress
+    evaluations across multiple ase.Atoms objects.
+
+    The caller supplies a `batch_evaluator(atoms_list)` callable that
+    returns `(energies, forces_list, stress_voigt_list)`:
+      - energies:          array-like of shape (B,)
+      - forces_list:       list of B arrays, each shape (N_i, 3)
+      - stress_voigt_list: list of B arrays, each shape (6,) in ASE convention
+
+    This keeps FIRE_parallel free of any ML backend import (deepmd, fairchem,
+    etc.), so it is safe to use in either conda env. Virial↔stress conversion
+    or any backend-specific post-processing lives in the caller's evaluator.
 
     Each structure is wrapped in a FrechetCellFilter so both atomic positions
     AND cell degrees of freedom are relaxed together, exactly like
@@ -59,10 +63,20 @@ class ParallelFIRE:
     Nsteps) is tracked independently and mirrors ase.optimize.fire.FIRE.step.
     """
 
-    def __init__(self, atoms_list, calc, fmax=0.05, max_steps=200,
+    def __init__(self, atoms_list, batch_evaluator: Callable = None,
+                 fmax=0.05, max_steps=200,
                  dt=0.1, maxstep=0.03, dtmax=1.0, Nmin=5,
                  finc=1.1, fdec=0.5, astart=0.1, fa=0.99, a=0.1,
                  logfile='-'):
+        if batch_evaluator is None:
+            warnings.warn(
+                "ParallelFIRE: no batch_evaluator provided. Pass a callable "
+                "batch_evaluator(atoms_list) -> (energies, forces_list, "
+                "stress_voigt_list). step()/run() will fail without one.",
+                stacklevel=2,
+            )
+        self.batch_evaluator = batch_evaluator
+
         self.states = []
         for at in atoms_list:
             at_copy = at.copy()
@@ -73,7 +87,6 @@ class ParallelFIRE:
                           Nmin=Nmin, finc=finc, fdec=fdec, astart=astart,
                           fa=fa, a=a)
             )
-        self.calc = calc
         self.fmax = fmax
         self.max_steps = max_steps
         self.nsteps_done = 0
@@ -93,10 +106,8 @@ class ParallelFIRE:
 
         active_atoms = [self.states[i].atoms for i in active_idx]
 
-        # Single batched GPU call for all active structures
-        coords, cells, types = build_batch_deepmd(active_atoms, self.calc.type_dict)
-        E, F, V = self.calc.dp.eval(coords, cells, types)[:3]
-        # E: (B, 1) or (B,); F: (B, N, 3) or (B, N*3); V: (B, 9) or (B, 3, 3)
+        # Single batched evaluation call, backend-agnostic.
+        E, F_list, S_list = self.batch_evaluator(active_atoms)
 
         for j, i in enumerate(active_idx):
             s = self.states[i]
@@ -104,7 +115,7 @@ class ParallelFIRE:
             # Inject batched results into a SinglePointCalculator so the
             # FrechetCellFilter can compute the combined (natoms+3, 3)
             # force vector (atomic forces + cell log-deformation gradient).
-            _inject_results(s.atoms, E[j], F[j], V[j])
+            _inject_results(s.atoms, E[j], F_list[j], S_list[j])
 
             force_vec = s.filter.get_forces()        # (natoms+3, 3)
             fnorm_max = float(np.linalg.norm(force_vec, axis=1).max())
@@ -145,10 +156,7 @@ class ParallelFIRE:
 
             # Let the filter update atomic positions AND cell together (UnitCellFilter)
             x = s.filter.get_positions().ravel()
-            # print('before',s.filter.atoms.cell)
             s.filter.set_positions((x + dr).reshape(-1, 3))
-            # print('after',s.filter.atoms.cell)
-            # s.atoms = s.filter.atoms
 
         return False
 
@@ -185,4 +193,3 @@ class ParallelFIRE:
 
     def get_atoms(self):
         return [s.atoms for s in self.states]
-

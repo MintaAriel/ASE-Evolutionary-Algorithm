@@ -7,11 +7,10 @@ exactly like LBFGS(FrechetCellFilter(atoms)) would do for a single structure.
 
 from dataclasses import dataclass, field
 from typing import Any
+from collections.abc import Callable
 import numpy as np
 from ase.filters import FrechetCellFilter
 from ase.calculators.singlepoint import SinglePointCalculator
-from ase.stress import full_3x3_to_voigt_6_stress
-from .create_batch import  build_batch_deepmd
 from ase.io import write
 from pathlib import Path
 from ase.io.trajectory import Trajectory
@@ -39,33 +38,39 @@ class LBFGSState:
     fmax_current: float | None = None
 
 
-def _inject_results(atoms, energy, forces, virial):
-    """Attach a SinglePointCalculator carrying the batched DP results so
+def _inject_results(atoms, energy, forces, stress_voigt):
+    """Attach a SinglePointCalculator carrying the batched results so
     FrechetCellFilter.get_forces() / atoms.get_stress() return them.
 
-    DP's virial v satisfies stress = -v / volume (ASE sign convention).
+    stress_voigt must already be in ASE sign convention, Voigt-6.
     """
-    volume = atoms.get_volume()
-    stress_3x3 = -np.asarray(virial).reshape(3, 3) / volume
-    stress_3x3 = 0.5 * (stress_3x3 + stress_3x3.T)
-    stress_voigt = full_3x3_to_voigt_6_stress(stress_3x3)
     atoms.calc = SinglePointCalculator(
         atoms,
         energy=float(np.asarray(energy).ravel()[0]),
         forces=np.asarray(forces).reshape(-1, 3),
-        stress=stress_voigt,
+        stress=np.asarray(stress_voigt).reshape(6),
     )
 
 
 class ParallelLBFGS:
-    """L-BFGS optimizer that batches force/energy/stress evaluations across
-    multiple ase.Atoms objects via a single deepmd calculator call per step.
+    """Backend-agnostic L-BFGS optimizer that batches force/energy/stress
+    evaluations across multiple ase.Atoms objects.
+
+    The caller supplies a `batch_evaluator(atoms_list)` callable that
+    returns `(energies, forces_list, stress_voigt_list)`:
+      - energies:          array-like of shape (B,)
+      - forces_list:       list of B arrays, each shape (N_i, 3)
+      - stress_voigt_list: list of B arrays, each shape (6,) in ASE convention
+
+    This keeps LBFGS_parallel free of any ML backend import (deepmd, fairchem,
+    etc.). Any virial↔stress conversion lives in the caller's evaluator.
 
     Per-structure L-BFGS history (s, y, rho, r0, f0, iteration) is tracked
     independently and mirrors ase.optimize.lbfgs.LBFGS.step exactly.
     """
 
-    def __init__(self, atoms_list, calc, fmax=0.05, max_steps=200,
+    def __init__(self, atoms_list, batch_evaluator: Callable = None,
+                 fmax=0.05, max_steps=200,
                  maxstep=0.2, memory=100, damping=1.0, alpha=70.0,
                  logfile='-'):
         if maxstep > 1.0:
@@ -73,7 +78,14 @@ class ParallelLBFGS:
                 f"maxstep={maxstep} is too large (must be <= 1.0 A)"
             )
 
-        self.calc = calc
+        if batch_evaluator is None:
+            warnings.warn(
+                "ParallelLBFGS: no batch_evaluator provided. Pass a callable "
+                "batch_evaluator(atoms_list) -> (energies, forces_list, "
+                "stress_voigt_list). step()/run() will fail without one.",
+                stacklevel=2,
+            )
+        self.batch_evaluator = batch_evaluator
         self.fmax = fmax
         self.max_steps = max_steps
         # Initial inverse Hessian guess (diagonal): H0 = 1/alpha. Shared
@@ -115,16 +127,15 @@ class ParallelLBFGS:
 
         active_atoms = [self.states[i].atoms for i in active_idx]
 
-        # Single batched GPU call for all active structures
-        coords, cells, types = build_batch_deepmd(active_atoms, self.calc.type_dict)
-        E, F, V = self.calc.dp.eval(coords, cells, types)[:3]
+        # Single batched evaluation call, backend-agnostic.
+        E, F_list, S_list = self.batch_evaluator(active_atoms)
 
         for j, i in enumerate(active_idx):
             st = self.states[i]
 
-            # Inject batched (E, F, V) so FrechetCellFilter can build the
-            # combined (natoms+3, 3) force vector for positions + cell DOFs.
-            _inject_results(st.atoms, E[j], F[j], V[j])
+            # Inject batched (E, F, stress_voigt) so FrechetCellFilter can build
+            # the combined (natoms+3, 3) force vector for positions + cell DOFs.
+            _inject_results(st.atoms, E[j], F_list[j], S_list[j])
 
             force_vec = st.filter.get_forces()          # (natoms+3, 3)
             fnorm_max = float(np.linalg.norm(force_vec, axis=1).max())

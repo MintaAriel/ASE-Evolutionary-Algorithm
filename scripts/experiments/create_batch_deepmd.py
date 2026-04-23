@@ -3,7 +3,7 @@ from ase.visualize import  view
 from deepmd.calculator import DP
 from pathlib import Path
 from io import StringIO
-from ea.parallel.create_batch import build_batch_deepmd
+from ea.parallel.create_batch import build_batch_deepmd, batch_calculator_deepmd
 from ea.parallel.FIRE_parallel import ParallelFIRE
 from ea.parallel.LBFGS_parallel import ParallelLBFGS
 import numpy as np
@@ -11,6 +11,14 @@ from ea.io.uspex_io import get_structure_from_id
 from ea.utils.config import load_config
 import warnings
 warnings.filterwarnings("ignore", message=r"logm result may be inaccurate.*")
+
+
+def make_deepmd_evaluator(calculator):
+    """Wrap batch_calculator_deepmd into the (atoms_list) -> (E, F, S) signature
+    that ParallelFIRE / ParallelLBFGS expect."""
+    def _eval(atoms_list):
+        return batch_calculator_deepmd(atoms_list, calculator)
+    return _eval
 
 cfg = load_config()
 
@@ -126,10 +134,13 @@ def run_full_optimization(batch_filtered, calc, out_dir, batch_size: int | None 
     indices = [i for i, x in enumerate(E0) if x > -545]
     print(indices)
 
+    evaluator = make_deepmd_evaluator(calc)
+
     print("\n=== running ParallelFIRE (positions + cell) on 4 structures ===")
     print('batch before', batch)
 
-    opt = ParallelFIRE(batch, calc, fmax=0.1, max_steps=500, maxstep=0.03)
+    opt = ParallelFIRE(batch, batch_evaluator=evaluator,
+                       fmax=0.1, max_steps=500, maxstep=0.03)
     opt.run()
     batch = opt.get_atoms()
 
@@ -141,27 +152,32 @@ def run_full_optimization(batch_filtered, calc, out_dir, batch_size: int | None 
               f"vol = {s.atoms.get_volume():.2f}  [{tag}]")
 
     print("\n=== running ParallelLBFGS (positions + cell) on 4 structures ===")
-    opt1 = ParallelLBFGS(batch, calc, fmax=0.03, max_steps=1200, maxstep=0.03, memory=40)
+    opt1 = ParallelLBFGS(batch, batch_evaluator=evaluator,
+                         fmax=0.03, max_steps=1200, maxstep=0.03, memory=40)
     opt1.run(out_dir=out_dir)
     batch = opt1.get_atoms()
 
     print('fmax=0.01')
-    opt2 = ParallelLBFGS(batch, calc, fmax=0.01, max_steps=1200, maxstep=0.03, memory=40)
+    opt2 = ParallelLBFGS(batch, batch_evaluator=evaluator,
+                         fmax=0.01, max_steps=1200, maxstep=0.03, memory=40)
     opt2.run(out_dir=out_dir)
     batch = opt2.get_atoms()
 
     print('fmax=0.005')
-    opt3 = ParallelLBFGS(batch, calc, fmax=0.005, max_steps=1200, maxstep=0.03, memory=40)
+    opt3 = ParallelLBFGS(batch, batch_evaluator=evaluator,
+                         fmax=0.005, max_steps=1200, maxstep=0.03, memory=40)
     opt3.run(out_dir=out_dir)
     batch = opt3.get_atoms()
 
     print('fmax=0.002')
-    opt4 = ParallelLBFGS(batch, calc, fmax=0.002, max_steps=1200, maxstep=0.03, memory=40)
+    opt4 = ParallelLBFGS(batch, batch_evaluator=evaluator,
+                         fmax=0.002, max_steps=1200, maxstep=0.03, memory=40)
     opt4.run(out_dir=out_dir)
     batch = opt4.get_atoms()
 
     print('fmax=0.001')
-    opt5 = ParallelLBFGS(batch, calc, fmax=0.001, max_steps=1200, maxstep=0.03, memory=40)
+    opt5 = ParallelLBFGS(batch, batch_evaluator=evaluator,
+                         fmax=0.001, max_steps=1200, maxstep=0.03, memory=40)
     opt5.run(out_dir=out_dir)
     batch = opt5.get_atoms()
 

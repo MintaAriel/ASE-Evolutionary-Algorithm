@@ -4,27 +4,49 @@
 from ase.io import read
 from ase.visualize import  view
 from deepmd.calculator import DP
+from ea.utils.config import load_config
 from pathlib import Path
 from ase.optimize import FIRE, LBFGS
 from ase.filters import FrechetCellFilter
 import warnings
 warnings.filterwarnings("ignore", message=r"logm result may be inaccurate.*")
 
+cfg = load_config()
+# atom = new_batch[2]
+# atoms_list = read('/home/vito/uspex_matlab/theo_pyxtal/2THP/test_1/all_relaxed.trajectory', index=':')
 
 
-uspex_test = '/home/vito/uspex_matlab/theo_uspex/test_parallel'
+base_dir = Path(__file__).parent.parent.parent  # directory of your script
+theophyline_dir = base_dir / cfg['paths']['data_dir'] / 'theophylline' / 'cif'
 
-new_batch = [read(Path(uspex_test, f'CalcFold{i}', 'geom.in'), format='vasp') for i in range(1,39)]
+print(theophyline_dir)
 
+structures = [f'str_{i}_POSCARS' for i in [6,10,18,19,26,29,38]]
 calc = DP(model='/home/vito/PythonProjects/ASEProject/container_gpu_2/models/dpa3-d3_torch.pth', device='gpu')
 
-# atom = new_batch[2]
-atoms_list = read('/home/vito/uspex_matlab/theo_pyxtal/2THP/test_1/all_relaxed.trajectory', index=':')
-# atom = read('/home/vito/PythonProjects/ASEProject/EA/data/theophylline/cif/str_19_POSCARS', format='vasp')
-atom = atoms_list[17]
-view(atom)
-atom.calc = calc
-print(atom.get_potential_energy())
+results = []
+
+for name in structures:
+    str_path = theophyline_dir / name
+    atom = read(str_path, format='vasp')
+
+    n_molecules = len(atom) / 21
+    atom.calc = calc
+    energy = atom.get_potential_energy()
+    energy_per_mol = energy / n_molecules
+
+    results.append((name, n_molecules, energy, energy_per_mol))
+
+
+# sort by total energy (ascending)
+results.sort(key=lambda x: x[2])
+
+
+# nicely formatted print
+for name, n_molecules, energy, energy_per_mol in results:
+    print(f"{name:<15}  Energy per {n_molecules:6.2f} mol: {energy:12.6f} eV   "
+          f"Energy per molecule: {energy_per_mol:12.6f} eV")
+
 
 # fire = FIRE(
 #     FrechetCellFilter(atom),
