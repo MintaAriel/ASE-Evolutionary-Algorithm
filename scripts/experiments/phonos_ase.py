@@ -21,11 +21,10 @@ calc = deep.build_calculator(models_dir=Path('/home/vito/PythonProjects/ASEProje
 
 cif_path = '/home/vito/PythonProjects/ASEProject/EA/data/theophylline/cif/str_18_POSCARS'
 
-atom = read(cif_path)
-atom.calc =calc
+
 out_dir = Path('/home/vito/PythonProjects/ASEProject/EA/test/phonopy')
 
-def phonons_at_gamma():
+def phonons_at_gamma(atom):
 
     vib_dir =  out_dir / 'vib'
     if vib_dir.exists() and vib_dir.is_dir():
@@ -37,6 +36,7 @@ def phonons_at_gamma():
     energy = vib.get_zero_point_energy()
 
     print('ZPE:', energy )
+    return energy
 
     #vib.write_mode(211)
 
@@ -98,4 +98,22 @@ def phonons_BZ():
     ph.clean()
 
 
-phonons_at_gamma()
+# phonons_at_gamma()
+from ase.io.trajectory import Trajectory
+
+
+start = time.perf_counter()
+
+zpe = []
+
+batch = Trajectory('/home/vito/uspex_matlab/theo_pyxtal/2THP/test_1 (Copy)/output.traj')[:24]
+for atom in batch:
+    print(atom)
+    # atom = read(cif_path)
+    atom.calc =calc
+    ener = phonons_at_gamma(atom)
+    zpe.append(ener)
+
+end = time.perf_counter()
+print(zpe)
+print(f"Elapsed time: {end - start} seconds")

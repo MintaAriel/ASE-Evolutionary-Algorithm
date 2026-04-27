@@ -4,6 +4,7 @@ from ea.parallel.FIRE_parallel import ParallelFIRE
 import numpy as np
 from ase.optimize import FIRE
 from ase.io import read
+import time
 from ase.filters import FrechetCellFilter
 import warnings
 warnings.filterwarnings("ignore", message=r"logm result may be inaccurate.*")
@@ -33,7 +34,8 @@ def run_full_optimization(batch_filtered, calc, out_dir, batch_size: int | None 
 
     print("\n=== initial batched eval ===")
 
-    # E0, F0, V0 = evaluator(batch)
+    E0, F0, V0 = evaluator(batch)
+    print(E0)
     # for i in range(len(batch)):
     #     fmax0 = np.linalg.norm(np.asarray(F0[i]).reshape(-1, 3), axis=1).max()
     #     vol = batch[i].get_volume()
@@ -59,6 +61,30 @@ def run_full_optimization(batch_filtered, calc, out_dir, batch_size: int | None 
               f"fmax = {s.fmax_current:.4f}  "
               f"vol = {s.atoms.get_volume():.2f}  [{tag}]")
 
+def sequential_eval(batch, calc):
+    energies = []
+    start = time.perf_counter()
+    for atom in batch:
+        atom.calc = calc
+        energy = atom.get_potential_energy()
+        print(energy)
+        energies.append(energy)
+
+    print(energies)
+    end = time.perf_counter()
+    print(f"Elapsed time: {end - start} seconds")
+
+def parallel_eval(batch, calc):
+    print("\n=== initial batched eval ===")
+    start = time.perf_counter()
+    evaluator = make_uma_evaluator(calc)
+    E0, F0, V0 = evaluator(batch)
+    print(E0)
+    end = time.perf_counter()
+    print(f"Elapsed time: {end - start} seconds")
+
+
+
 
 if __name__ == '__main__':
     # for v in images[:10]:
@@ -70,4 +96,9 @@ if __name__ == '__main__':
     #     fire.run(fmax=0.1, steps=500)
     #     print('DONE')
 
-    run_full_optimization(images, calc, out_dir=None, batch_size=10)
+    # run_full_optimization(images, calc, out_dir=None, batch_size=10)
+    images = images[:10]
+    sequential_eval(images,calc)
+    sequential_eval(images, calc)
+    # parallel_eval(images,calc)
+    # parallel_eval(images, calc)
