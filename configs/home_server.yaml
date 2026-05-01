@@ -16,8 +16,8 @@ uspex:
   exe: USPEX
 
 vasp:
-  kpeg: /home/genesis/VASP/forces_FINAL/create_kpoints.sh
-  vasp6: /home/genesis/VASP/run_vasp.sh
+  kpeg: /home/genesis/PycharmProjects/ASE-Evolutionary-Algorithm/data/runners/create_kpoints.sh
+  vasp6: /home/genesis/PycharmProjects/ASE-Evolutionary-Algorithm/data/runners/run_vasp.sh
   cores: 4
   cpu_numbering: adjacent
 #blocked if threads are(0,1) core 0, (2,3) core 1 - laptop cpu
