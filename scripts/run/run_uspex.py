@@ -22,6 +22,10 @@ import threading
 import time
 from pathlib import Path
 
+# Make ``ea.utils.config`` importable when run as a script
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+from ea.utils.config import load_config
+
 log = logging.getLogger("run_uspex")
 
 # Event set by signal handler to request graceful shutdown
@@ -138,18 +142,13 @@ def wait_for_uspex_x(workdir):
 # USPEX invocation
 # ---------------------------------------------------------------------------
 
-def run_uspex_resume(workdir, log_file, uspex_cmd="USPEX"):
+def run_uspex_resume(workdir, log_file, uspex_cmd="USPEX", env=None):
     """Call ``<uspex_cmd> -r`` and append its output to *log_file*."""
     log.info("Running %s -r", uspex_cmd)
-    env = os.environ.copy()
-    env["MYUSPEXPATH"] = "/home/sirena/Brian/uspex-matlab/application/archive/src"
-    env["USPEXPATH"] = "/home/sirena/Brian/uspex-matlab/application/archive/src"
-    env["MCRROOT"] = "/home/sirena/Brian/uspex-matlab"
-
     result = subprocess.run(
         [uspex_cmd, "-r"],
         cwd=workdir,
-        env = env,
+        env=env if env is not None else os.environ.copy(),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         universal_newlines=True,
@@ -168,7 +167,8 @@ def run_uspex_resume(workdir, log_file, uspex_cmd="USPEX"):
 # Main loop
 # ---------------------------------------------------------------------------
 
-def main_loop(workdir, max_active, poll_interval, log_file, uspex_cmd="USPEX"):
+def main_loop(workdir, max_active, poll_interval, log_file, uspex_cmd="USPEX",
+              env=None):
     wait_for_uspex_x(workdir)
 
     done = is_done(workdir)
@@ -182,7 +182,7 @@ def main_loop(workdir, max_active, poll_interval, log_file, uspex_cmd="USPEX"):
             log.info("Found %s — stopping", done)
             break
 
-        run_uspex_resume(workdir, log_file, uspex_cmd)
+        run_uspex_resume(workdir, log_file, uspex_cmd, env)
 
         # Throttle: wait until at least one CalcFolder slot is free
         _stop_event.wait(poll_interval)
@@ -228,9 +228,9 @@ def main():
                         help="Run USPEX --clean before starting")
     parser.add_argument("--log-file", default=None,
                         help="USPEX output log (default: <workdir>/uspex_runner.log)")
-    parser.add_argument("--uspex-cmd", default="USPEX",
+    parser.add_argument("--uspex-cmd", default=None,
                         help="Path or name of the USPEX executable "
-                             "(default: USPEX)")
+                             "(default: uspex.exe from sirena.yaml, else USPEX)")
     parser.add_argument("--log-level", default="INFO",
                         choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     args = parser.parse_args()
@@ -259,7 +259,17 @@ def main():
         sys.exit(1)
 
     max_active = args.max_active if args.max_active is not None else num_parallel
-    uspex_cmd = args.uspex_cmd
+
+    cfg = load_config()
+    uspex_cfg = cfg.get("uspex") or {}
+    uspex_cmd = args.uspex_cmd or os.path.expanduser(uspex_cfg.get("exe", "USPEX"))
+
+    env = os.environ.copy()
+    if "uspex_path" in uspex_cfg:
+        env["MYUSPEXPATH"] = uspex_cfg["uspex_path"]
+        env["USPEXPATH"] = uspex_cfg["uspex_path"]
+    if "mcr_root" in uspex_cfg:
+        env["MCRROOT"] = uspex_cfg["mcr_root"]
 
     log.info("USPEX runner starting")
     log.info("  uspex command:      %s", uspex_cmd)
@@ -280,10 +290,10 @@ def main():
     # --- Optional clean ---
     if args.clean:
         log.info("Running %s --clean", uspex_cmd)
-        subprocess.run([uspex_cmd, "--clean"], cwd=workdir)
+        subprocess.run([uspex_cmd, "--clean"], cwd=workdir, env=env)
 
     # --- Go ---
-    main_loop(workdir, max_active, args.poll_interval, log_file, uspex_cmd)
+    main_loop(workdir, max_active, args.poll_interval, log_file, uspex_cmd, env)
     log.info("Done.")
 
 

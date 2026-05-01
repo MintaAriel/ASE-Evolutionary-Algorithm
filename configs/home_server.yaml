@@ -12,6 +12,17 @@ executables:
 simulation:
   engine: mattersim
 
+uspex:
+  exe: USPEX
+
+vasp:
+  kpeg: /home/genesis/VASP/forces_FINAL/create_kpoints.sh
+  vasp6: /home/genesis/VASP/run_vasp.sh
+  cores: 4
+  cpu_numbering: adjacent
+#blocked if threads are(0,1) core 0, (2,3) core 1 - laptop cpu
+#interleaved if threads are (0,128) core 0, (1,219) core 1 -AMD EPYC
+
 mattersim:
   container_root: /home/genesis/PycharmProjects/container_cpu_2
   model_path: /home/genesis/PycharmProjects/container_cpu_2/models/tuned_mattersim_12.03.2026.pth
