@@ -16,6 +16,12 @@ uspex:
   uspex_path: /home/sirena/Brian/uspex-matlab/application/archive/src
   mcr_root: /home/sirena/Brian/uspex-matlab
 
+vasp:
+  kpeg: /home/sirena/Brian/VASP/create_kpoints.sh
+  vasp6: /home/sirena/Brian/VASP/run_vasp.sh
+  cores: 128
+  cpu_numbering: interleaved
+
 simulation:
   engine: mattersim
 

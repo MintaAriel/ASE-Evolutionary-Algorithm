@@ -59,7 +59,7 @@ def create_vasp_sp(input_dir, out_dir, traj):
         shutil.copy(Path(input_dir) / 'POTCAR', calc_fold_path)
         atoms = sort_poscar(traj[i])
         write(calc_fold_path / 'POSCAR', atoms, format='vasp')
-        create_kpoints(calc_fold_path, ["-g", "auto", "-d", "20"])
+        create_kpoints(calc_fold_path, ["-g", "auto", "-d", "25"])
 
 def cpu_affinity():
     if NUMBERING == 'adjacent':

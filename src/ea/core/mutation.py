@@ -5,6 +5,23 @@ from ..structures import create_seeds
 import os
 import shutil
 
+def rearange_mut(work_dir, connections_dir ,atom, lenghts ):
+    optimizer = fix_mol_gradient.GradientDescentGULP(atom, work_dir=work_dir, connections=connections_dir,
+                                                     library='reaxff')
+    # optimizer.asu.cell[0][0] = lenghts[0]
+    # optimizer.asu.cell[1][1] = lenghts[1]
+    # optimizer.asu.cell[2][2] = lenghts[2]
+    optimizer.asu.set_cell([8.211, 5.4624, 65.38, 90, 87.78, 90])
+    try:
+        new = optimizer.run(steps=150, traj=True)
+        best = optimizer.best_structure
+    except Exception as e:
+        print(e)
+        print(f'structure not suitable')
+        # best = atom
+
+    return optimizer.best_structure
+
 
 class mutate_reaxff():
     def __init__(self, work_dir, connection_dir):
@@ -52,7 +69,7 @@ class mutate_reaxff_small():
 
 
 
-    def mutate(self, n_structures, poscar_name='POSCARS_1'):
+    def mutate(self, n_structures, poscar_name='POSCARS_1', factor=0.85):
         traj_dir = os.path.join(self.work_dir, self.traj_name)
         trajectory = Trajectory(traj_dir, 'w')
         for i in range(2,int(2+n_structures)):
@@ -60,7 +77,7 @@ class mutate_reaxff_small():
             optimizer = fix_mol_gradient.GradientDescentGULP(atom, work_dir=self.work_dir, connections=self.connection_dir, library='reaxff')
 
             try:
-                optimizer.asu.cell *= 0.85
+                optimizer.asu.cell *= factor
                 new  = optimizer.run(steps =50,  traj=True)
                 best = optimizer.best_structure
             except Exception as e:

@@ -18,7 +18,7 @@ vasp:
   vasp6: /home/vito/VASP/forces_FINAL/run_vasp.sh
   cores: 6
   cpu_numbering: adjacent
-#blocked if threads are(0,1) core 0, (2,3) core 1 - laptop cpu
+#adjactent if threads are(0,1) core 0, (2,3) core 1 - laptop cpu
 #interleaved if threads are (0,128) core 0, (1,219) core 1 -AMD EPYC
 
 simulation:

@@ -50,14 +50,14 @@ def main():
 
     input_path = os.path.join(test_dir, "ase_INPUT.txt")
     mol_path = os.path.join(test_dir, "MOL_1")
+    mol_path2 = os.path.join(test_dir, "MOL")
     db_path = os.path.join(test_dir, "theophilline.db")
 
     if not os.path.exists(input_path):
         raise FileNotFoundError(f"Missing ase_INPUT.txt in {test_dir}")
 
-    if not os.path.exists(mol_path):
-        raise FileNotFoundError(f"Missing MOL_1 in {test_dir}")
-
+    if not (os.path.exists(mol_path) or os.path.exists(mol_path2)):
+        raise FileNotFoundError(f"Missing MOL_1 and MOL in {test_dir}")
 
     # Perform cleaning if flag is used
     if args.clean:
@@ -67,9 +67,12 @@ def main():
     # Read ase_INPUT.txt from current folder
     params = read_input.parse_input_file(os.path.join(test_dir, 'ase_INPUT.txt'))
 
+    if os.path.exists(mol_path):
+        ase_mol = ase_creator.mol2ase(MOL_path=mol_path)
+        molecule = ase_mol.read()
 
-    ase_mol = ase_creator.mol2ase(MOL_path=mol_path)
-    molecule = ase_mol.read()
+    elif os.path.exists(mol_path2):
+        molecule = ase_creator.mol2ase2(mol_path2)
 
     n = params['numSpecies']
 

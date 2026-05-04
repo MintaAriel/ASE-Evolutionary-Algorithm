@@ -6,6 +6,7 @@ import pandas as pd
 import json
 from ase.data import chemical_symbols
 from ase.visualize import view
+from pathlib import Path
 import numpy as np
 
 
@@ -42,6 +43,36 @@ class mol2ase():
         with open(f'{folder_path}/labels.json', 'w') as f:
             json.dump(labels, f)
         return urea
+
+def mol2ase2(MOL_path):
+    with open(MOL_path, 'r') as f:
+        lines = f.readlines()
+
+    counts_idx = None
+    for i, line in enumerate(lines):
+        if 'V2000' in line:
+            counts_idx = i
+            break
+    if counts_idx is None:
+        raise ValueError(f"Not a V2000 MOL file: {MOL_path}")
+
+    n_atoms = int(lines[counts_idx][0:3])
+
+    atom_block_start = counts_idx + 1
+    atom_lines = lines[atom_block_start:atom_block_start + n_atoms]
+
+    symbols = []
+    positions = []
+    for line in atom_lines:
+        x = float(line[0:10])
+        y = float(line[10:20])
+        z = float(line[20:30])
+        symbol = line[31:34].strip()
+        positions.append([x, y, z])
+        symbols.append(symbol)
+
+    return Atoms(symbols=symbols, positions=np.array(positions))
+
 
 class poscar2ase_molecule():
     def __init__(self, Molfile_dir, poscar_dir):
@@ -163,10 +194,10 @@ class poscar2ase_molecule():
 # urea = urea_mol.read()
 # view(urea)
 
-def NIH2ase():
+def NIH2ase(json_file, out_dir):
 
 
-    with open('/home/vito/PythonProjects/ASEProject/CARLO/Carbamazepine/Conformer3D_COMPOUND_CID_2554.json', 'r') as f:
+    with open(json_file, 'r') as f:
         data = json.load(f)
 
     # If your JSON is already a string
@@ -196,14 +227,14 @@ def NIH2ase():
 
     custom_header = f"Carbamazepine\nNumber of atoms: {len(coords)}\n"
 
-    # with open('MOL_1', 'w') as f:
-    #     f.write(custom_header)
-    #     coords.to_csv(f, index=False, header=False, sep='\t')
-    #
-    # with open('connections', 'w') as f:
-    #     f.write(connections)
-    #
-    bonds.to_json('bonds.json',
+    with open(Path(out_dir) / 'MOL_1', 'w') as f:
+        f.write(custom_header)
+        coords.to_csv(f, index=False, header=False, sep='\t')
+
+    with open(Path(out_dir) / 'connections', 'w') as f:
+        f.write(connections)
+
+    bonds.to_json(Path(out_dir) /'bonds.json',
                   orient='records',
                   indent=4)
 
