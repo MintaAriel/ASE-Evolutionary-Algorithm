@@ -25,7 +25,7 @@ cif_path = '/home/vito/PythonProjects/ASEProject/EA/data/theophylline/cif/str_18
 out_dir = Path('/home/vito/PythonProjects/ASEProject/EA/test/phonopy')
 
 def phonons_at_gamma(atom):
-
+    # S = np.diag([2, 2, 2])  # 2x2x2 supercell
     vib_dir =  out_dir / 'vib'
     if vib_dir.exists() and vib_dir.is_dir():
         shutil.rmtree(vib_dir)
@@ -106,7 +106,8 @@ start = time.perf_counter()
 
 zpe = []
 
-batch = Trajectory('/home/vito/uspex_matlab/theo_pyxtal/2THP/test_1 (Copy)/output.traj')[:24]
+# batch = Trajectory('/home/vito/uspex_matlab/theo_pyxtal/2THP/test_1 (Copy)/output.traj')[:24]
+batch=  [read('/home/vito/PythonProjects/ASEProject/EA/results/THP/optd/str_38_optd_pbebj_9a.vasp')]
 for atom in batch:
     print(atom)
     # atom = read(cif_path)

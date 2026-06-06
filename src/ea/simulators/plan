@@ -1,0 +1,16 @@
+Use the function from ea.analysis.compare_model import CompareModel
+
+def test_compare_model():
+    base = Path('/home/vito/PythonProjects/ASEProject/DeepmdTrain')
+    cmp = CompareModel(base / 'allpbebj_vasp.traj', base / 'allpbebj_gfnff_my.traj')
+
+    cmp.plot()
+    cmp.plot_forces_xyz()
+    cmp.plot_virial_diag()
+
+to load my model (DFT) ase traj file with energies, forces, and streses per atom and the try.traj file you will create in this steps
+go to @/home/vito/PythonProjects/Optimisation/src/pygulp/forcefields/gnff_fine_tun.py and load the fine_tune function, just task is to run
+the function recalculate_batch_gulp using the parameters you get from the bayesian optimization, as a result  this funciton creates a traj file that
+then you can use in test_compare_model() to get the RMSE per atom for forces, energy, and virial. the values are already normalized by atom
+so your task is to minimize the loss function of Loss = 0.2 * RMSE(Energy) + 0.6 * RMSE(Forces) + 0.2 * RMSE(virial).
+You will use gfnff_scale parameters 0.8 1.343 0.727 1.0 2.859 as an starting point and do the bayesian optimization in a range of +-0.3 of the initial values

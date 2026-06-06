@@ -6,23 +6,28 @@ import os
 import shutil
 from ase.vibrations import Vibrations
 from deepmd_template import DeepMDRelaxation, RelaxConfig
+
+from deepmd.calculator import DP
 from ase.io import write
+
+calc = DP(model='/home/vito/PythonProjects/ASEProject/EA/models/dpa3-pbed3-pytorch.pth', device='gpu')
+
 
 config = RelaxConfig(cores=[1,2,3])
 
-deep = DeepMDRelaxation(config)
-deep.model_key = 'deepmd_d3'
-calc = deep.build_calculator(models_dir=Path('/home/vito/PythonProjects/ASEProject/container_gpu_2/models'),
-                             device='cuda',
-                             threads=2)
+# deep = DeepMDRelaxation(config)
+# deep.model_key = 'deepmd_d3'
+# calc = deep.build_calculator(models_dir=Path('/home/vito/PythonProjects/ASEProject/container_gpu_2/models'),
+#                              device='cuda',
+#                              threads=2)
 
-TRAJS_DIR = Path('/home/vito/PythonProjects/ASEProject/EA/test/nvidia parallel')
-
-traj = '/home/vito/uspex_matlab/theo_pyxtal/2THP/test_2/output.traj'
-
-traj = Trajectory(traj, 'r')
-
-numeros = [0,8,26,29,54,65,74,85,92,125,130,132,136]
+# TRAJS_DIR = Path('/home/vito/PythonProjects/ASEProject/EA/test/nvidia parallel')
+#
+# traj = '/home/vito/uspex_matlab/theo_pyxtal/2THP/test_2/output.traj'
+#
+# traj = Trajectory(traj, 'r')
+#
+# numeros = [0,8,26,29,54,65,74,85,92,125,130,132,136]
 
 # for i in numeros:
 #     atom18 = traj[i]
@@ -48,7 +53,7 @@ def phonons_at_gamma(atom, out_dir):
 # results_dir = '/home/vito/PythonProjects/ASEProject/EA/data/theophylline/cif/polymorphs'
 #
 # structures = os.listdir(results_dir)
-results_dir = '/home/vito/PythonProjects/ASEProject/EA/data/theophylline/cif'
+# results_dir = '/home/vito/PythonProjects/ASEProject/EA/data/theophylline/cif'
 # structures =  ['128707.cif', '862238.cif', '1039798.cif']
 # structures = ['/home/vito/PythonProjects/ASEProject/container_gpu_2/Results/128707/deepmd_d3_in/POSCAR_final',
 #               '/home/vito/PythonProjects/ASEProject/container_gpu_2/Results/862238/deepmd_d3_in/POSCAR_final',
@@ -58,7 +63,7 @@ results_dir = '/home/vito/PythonProjects/ASEProject/EA/data/theophylline/cif'
 from pathlib import Path
 
 # Directory containing your files
-folder = Path("/home/vito/PythonProjects/ASEProject/from_Carlo_to_Brian/Optd_9a_d")
+folder = Path("/home/vito/PythonProjects/ASEProject/EA/results/THP/optd")
 
 # Lists to store paths
 d_files = []
@@ -72,29 +77,37 @@ for file in folder.glob("*.vasp"):
         d_files.append(str(file))
 
 
-    elif name.endswith("_optd_9a.vasp"):
+    elif name.endswith("_pbebj_9a.vasp"):
         a9_files.append(str(file))
         print(file)
 
 # Optional: sort for reproducibility
-d_files.sort()
-a9_files.sort()
+# d_files.sort()
+# a9_files.sort()
+
+results_dir = folder
+names = [os.path.basename(path) for path in a9_files]
 
 
-print(d_files)
+print(names)
 
 batch = []
 ZPE = []
-# for structure in a9_files:
-#     # full_dir = os.path.join(results_dir, structure)
-#     full_dir = structure
-#     crystal = read(full_dir, format='vasp')
-#     crystal.calc = calc
-#     batch.append(crystal)
-#     zpe = phonons_at_gamma(crystal, results_dir)
-#     ZPE.append(zpe)
-#     print(zpe)
-#
+for structure in a9_files:
+    # full_dir = os.path.join(results_dir, structure)
+    full_dir = structure
+    crystal = read(full_dir, format='vasp')
+    crystal.calc = calc
+    batch.append(crystal)
+    # zpe = phonons_at_gamma(crystal, results_dir)
+    zpe = crystal.get_potential_energy()
+    ZPE.append(zpe)
+    print(zpe)
+
 # print(batch)
-# print(ZPE)
+#
+results = {'crystal':names,
+           'ZPE': ZPE}
+print(results)
+print(ZPE)
 

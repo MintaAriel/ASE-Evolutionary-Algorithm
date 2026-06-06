@@ -90,14 +90,39 @@ def check_uspex(parallel=True):
 
 
 if __name__ == '__main__':
+    from deepmd_parallel import run, RelaxConfig
     start2 = time.perf_counter()
-    calc = DP(model='/home/vito/PythonProjects/ASEProject/container_gpu_2/models/dpa3-d3_torch.pth', device='gpu')
-    check_uspex(parallel=False)
-    check_uspex(parallel=False)
-    check_uspex(parallel=False)
-    check_uspex(parallel=False)
-    check_uspex(parallel=False)
-    check_uspex(parallel=False)
+    # calc = DP(model='/home/vito/PythonProjects/ASEProject/EA/models/dpa3-pbed3-pytorch.pth', device='gpu')
+    # # calc = DP(model='/home/vito/PythonProjects/ASEProject/EA/models/dpa3-d3_torch.pth', device='gpu')
+    # # nuevo = read('/home/vito/Downloads/1842250.cif')
+    # nuevo = read('/home/vito/PythonProjects/ASEProject/EA/results/THP/BEST_POSCARS/best_gfnff.vasp', format='vasp')
+    #
+    # nuevo.calc = calc
+    # # print(nuevo.get_potential_energy())
+    # # check_uspex(parallel=False)
+    # # check_uspex(parallel=False)
+    # # check_uspex(parallel=False)
+    # # check_uspex(parallel=False)
+    # # check_uspex(parallel=False)
+    # # check_uspex(parallel=False)
+    # dan = RelaxConfig
+    # run(dan , nuevo, Path('/home/vito/PythonProjects/ASEProject/EA/results/THP/BEST_POSCARS'))
+
+    data = get_structure_from_id(poscar_dir='/home/vito/PythonProjects/ASEProject/EA/results/THP/BEST_POSCARS/collected_theophylline_2POSCARS',
+                                id_structures=[1], all=True)
+    batch = []
+    for k, v in data.items():
+        atom = read(StringIO(v), format='vasp')
+        batch.append(atom)
+
+    from ase.io import Trajectory
+    traj = Trajectory("/home/vito/Documents/USPEX_test/004_theophylline_4_mol_gulp_trained/results1/structuresmy2.traj", "w")
+
+    # Write all structures
+    for atoms in batch:
+        traj.write(atoms)
+
+    traj.close()
 
     end2 = time.perf_counter()
     print(f"Elapsed time: {end2 - start2} seconds")

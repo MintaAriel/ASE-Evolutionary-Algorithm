@@ -228,7 +228,7 @@ class AllIndivuals():
         with open(os.path.join(out_dir,name), "w") as f:
             f.write(All_poscars)
 
-        return df
+        return df, best
 
 
 class CompareRuns:

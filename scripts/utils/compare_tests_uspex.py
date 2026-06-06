@@ -3,6 +3,8 @@ from ea.io.uspex_io import parse_tests
 from ea.analysis.success_rate import SuccessResults, AnalyzeTest, AllIndivuals, CompareRuns
 from tabulate import tabulate
 from pathlib import Path
+from io import StringIO
+from ase.io import read, write
 
 script_dir = Path(__file__).parent
 project_root = script_dir.parent
@@ -70,7 +72,7 @@ def read_results(dic_experiments, task='read'):
         # benchmark.plot_success_hist()
         # benchmark.plot_best()
 
-read_results(dic_experiments=thp_folder, task='compare')
+# read_results(dic_experiments=thp_folder, task='compare')
 
 # '/home/vito/PythonProjects/ASEProject/EA/test/collected_theophylline'
 
@@ -103,6 +105,7 @@ def compare_mean_energy(experiment):
 
     experiment_db = 'all_' + experiment + '.db'
     test_dir = os.path.join(all_ind_dir, experiment_db)
+    print(test_dir)
     collect = AllIndivuals(test_dir)
     # collect.mean_energy(plot=True)
     # collect.operator_percent(plot=True)
@@ -123,6 +126,24 @@ test_names =  {'uspex':'theophylline_uspex',
 # compare = CompareRuns(test_seeds)
 # # compare.operator_percent(parameters='Random', top_gen=40)
 # compare.energy_per_generation(parameter='energy')
+
+# d, dic = compare_mean_energy('collected_theophylline_2')
+# print(dic)
+
+collect = AllIndivuals('/home/vito/PythonProjects/ASEProject/EA/results/THP/individuals/all_collected_theophylline_2.db')
+_,data =collect.get_lowest_poscar(n=400, gatheredPOSCARS_dir='/home/vito/PythonProjects/ASEProject/EA/results/THP/gatheredPOSCARS',
+                                                       out_dir='/home/vito/PythonProjects/ASEProject/DeepmdTrain/gfnff_tune/best')
+
+best_2 = []
+print(data)
+for k,v in data.items():
+    for k2,v2 in v.items():
+        atom = read(StringIO(v2), format='vasp')
+        best_2.append(atom)
+
+# print(best_2)
+
+write('/home/vito/PythonProjects/ASEProject/DeepmdTrain/gfnff_tune/THP4_best_2.traj', best_2[:100])
 #
 
 

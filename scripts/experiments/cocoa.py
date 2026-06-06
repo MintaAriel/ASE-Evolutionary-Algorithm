@@ -14,6 +14,9 @@ import json
 import pandas as pd
 
 
+# NIH2ase('/home/vito/PythonProjects/ASEProject/EA/data/theobromine/Conformer3D_COMPOUND_CID_5429.json',
+#         '/home/vito/PythonProjects/ASEProject/EA/data/theobromine/')
+
 def make_asu():
     poly5 = read('/home/vito/Downloads/dr5011sup1.cif', format='cif')
 
@@ -37,11 +40,18 @@ def make_asu():
 #
 # make_asu()
 
-a = mol2ase2('/home/vito/PythonProjects/ASEProject/EA/data/SOS/b1molecule.mol')
-b = mol2ase2('/home/vito/PythonProjects/ASEProject/EA/data/SOS/b2molecule.mol')
+
+# carba = read('/home/vito/PythonProjects/ASEProject/EA/data/carbamazepine/cif/carb2.cif')
 #
-view(a)
-view(b)
+# asu, _, _ = define_ASU(carba)
+# view(asu)
+# a = mol2ase2('/home/vito/PythonProjects/ASEProject/EA/data/SOS/b1molecule.mol')
+# b = mol2ase('/home/vito/PythonProjects/ASEProject/EA/data/theobromine/MOL_1')
+# c = b.read()
+# print(c)
+# #
+#
+# view(c)
 
 # w,e,r,f = create_mol_from_asu(a, cov_radii=0.9)
 # make_mol_file(e, a, r, f, '/home/vito/PythonProjects/ASEProject/EA/data/SOS')
@@ -52,8 +62,8 @@ from ea.structures.create_seeds import write_POSCAR
 
 # d = write_POSCAR('/home/vito/uspex_matlab/SOS/test1/theophilline.db', '/home/vito/uspex_matlab/SOS/test1')
 # d.create(20)
-# mut = mutate_reaxff_small('/home/vito/uspex_matlab/SOS/test1', '/home/vito/uspex_matlab/SOS/test1/connections')
-# mut.mutate(20,  '4_POSCARS', factor=0.75)
+mut = mutate_reaxff_small('/home/vito/uspex_matlab/Theo8/theo_4mol', '/home/vito/uspex_matlab/Theo8/test_2/connections')
+mut.mutate(80,  '2_POSCARS', factor=0.75, keep_traj=True)
 
 
 
@@ -63,12 +73,17 @@ from ea.structures.create_seeds import write_POSCAR
 # # print(se.cell[0][0])
 # print(se.cell)
 # view(se)
-# # print(se.get_tags())
+# # # print(se.get_tags())
+# V0 = se.get_volume()
 # new = rearange_mut('/home/vito/uspex_matlab/SOS/test1',
 #                    '/home/vito/uspex_matlab/SOS/test1/connections',
 #                    se, lengths)
 #
-# print(new)
+# Vf = new.get_volume()
 # view(new)
-# write('/home/vito/uspex_matlab/SOS/test1/exp3.cif', new, format='cif')
-# parse_connections2('/home/vito/PythonProjects/ASEProject/EA/data/SOS/molecule.mol')
+#
+# print(Vf-V0)
+# # view(new)
+# tra = read('/home/vito/uspex_matlab/SOS/test1/gulp_sim.trajectory', index=':')[0]
+# write('/home/vito/uspex_matlab/SOS/test1/first_POSCARS', tra, format='cif')
+# parse_connections2('/home/vito/PythonProjects/ASEProject/EA/results/THP/polyclean_bj/38_pair_02_a0_n1_-110.mol')

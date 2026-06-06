@@ -15,7 +15,7 @@ from ase.io import read
 
 cfg = load_config()
 ms = cfg['deepmd']
-MODELS = ms['models_path']
+MODELS_PATH = ms['models_path']
 
 crystal1= read('/home/vito/uspex_matlab/theo_uspex/test_2/CalcFold1/geom.in')
 crystal2 = read('/home/vito/uspex_matlab/theo_uspex/test_2/CalcFold2/geom.in')
@@ -48,12 +48,12 @@ def resolve_model(models_dir: Path, key: str) -> tuple[Path, str]:
     return path, key
 
 
-model_path, _ = resolve_model(Path(MODELS),'deepmd_d3')
+model_path, _ = resolve_model(Path(MODELS_PATH),'deepmd_d3')
 
 calc = DP(model=str(model_path), device='gpu')
 
 
-def run(self, atoms, out_dir):
+def run(dan, atoms, out_dir):
     log_path = out_dir / "relax.log"
     traj_path = out_dir / "opt.traj"
 
@@ -62,9 +62,9 @@ def run(self, atoms, out_dir):
         FrechetCellFilter(atoms),
         logfile=str(log_path),
         trajectory=str(traj_path),
-        maxstep=self.cfg.maxstep,
+        maxstep=dan.maxstep,
     )
-    fire.run(fmax=self.cfg.fire_fmax, steps=self.cfg.fire_steps)
+    fire.run(fmax=dan.fire_fmax, steps=dan.fire_steps)
 
     # LBFGS stages
     lbfgs = LBFGS(
@@ -72,18 +72,18 @@ def run(self, atoms, out_dir):
         logfile=str(log_path),
         trajectory=str(traj_path),
         append_trajectory=True,
-        maxstep=self.cfg.maxstep,
+        maxstep=dan.maxstep,
         memory=40,
     )
 
-    for fmax in self.cfg.lbfgs_stages:
-        lbfgs.run(fmax=fmax, steps=self.cfg.lbfgs_steps)
+    for fmax in dan.lbfgs_stages:
+        lbfgs.run(fmax=fmax, steps=dan.lbfgs_steps)
 
     energy = atoms.get_potential_energy()
 
     return {
         "optimizer": "fire_then_staged_lbfgs",
         "nsteps": int(fire.nsteps + lbfgs.nsteps),
-        "lbfgs_stages": list(self.cfg.lbfgs_stages),
+        "lbfgs_stages": list(dan.lbfgs_stages),
         "energy": energy
     }

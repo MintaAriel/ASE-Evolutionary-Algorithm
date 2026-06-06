@@ -1,7 +1,12 @@
 from ea.core.mutation import mutate_reaxff, mutate_reaxff_small2
 
-operator = mutate_reaxff_small2(work_dir='/home/vito/uspex_matlab/theo_pyxtal/2THP/test_3',
-                         connection_dir='/home/vito/PythonProjects/ASEProject/EA/data/theophylline/connections')
+# operator = mutate_reaxff_small2(work_dir='/home/vito/uspex_matlab/theo_pyxtal/2THP/test_3',
+#                          connection_dir='/home/vito/PythonProjects/ASEProject/EA/data/theophylline/connections')
+#
+# operator.mutate(n_structures=10, poscar_name='1_POSCARS', keep_traj=True)
 
-operator.mutate(n_structures=10, poscar_name='1_POSCARS', keep_traj=True)
 
+operator = mutate_reaxff_small2(work_dir='/home/vito/uspex_matlab/theo_pyxtal/theobromine',
+                         connection_dir='/home/vito/PythonProjects/ASEProject/EA/data/theobromine/connections')
+
+operator.mutate(n_structures=60, poscar_name='4_POSCARS', keep_traj=True)

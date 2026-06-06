@@ -24,7 +24,7 @@ cfg = load_config()
 
 MODELS = {
     'base_deepmd': 'dpa3_12.03.2026.pth',
-    'deepmd_d3': 'dpa3-d3_torch.pth',
+    'deepmd_d3': 'dpa3-pbed3-pytorch.pth',
     'deepmd_d4': 'dpa3-d4.pth',
     'deepmd_d3_abs': 'dpa3-d3_abs_torch.pth',
     'deepmd_d3_mbj': 'dpa3-d3-cpu_mbj.pth',
@@ -96,7 +96,8 @@ def clean_batch(idx:list, batch):
     return batch
 
 
-def point_calculation(batch, calc, energy_threshold:float = 0):
+def point_calculation(batch, calc, energy_threshold: float = 0,
+                      similarity_tol: float | None = None):
     print("\n=== initial batched eval ===")
     coords0, cells0, types0 = build_batch_deepmd(batch, calc.type_dict)
     E0, F0, V0 = calc.dp.eval(coords0, cells0, types0)[:3]
@@ -108,9 +109,25 @@ def point_calculation(batch, calc, energy_threshold:float = 0):
               f"fmax = {fmax0:.4f}  "
               f"tr(stress) = {stress.trace():.4f} eV/A^3")
     print(E0)
-    indices = [i for i, x in enumerate(E0) if x > energy_threshold]
-    print(indices)
+    energies = [float(np.asarray(e).ravel()[0]) for e in E0]
+    indices = {i for i, e in enumerate(energies) if e > energy_threshold}
 
+    if similarity_tol is not None and similarity_tol > 0:
+        survivors = sorted(
+            (i for i in range(len(energies)) if i not in indices),
+            key=lambda i: energies[i],
+        )
+        kept = []
+        for i in survivors:
+            if any(abs(energies[i] - energies[j]) <= similarity_tol for j in kept):
+                indices.add(i)
+            else:
+                kept.append(i)
+        print(f"Similarity filter (tol={similarity_tol}): "
+              f"kept {len(kept)}, dropped {len(survivors) - len(kept)} duplicates")
+
+    indices = sorted(indices)
+    print(indices)
 
     return indices
 
@@ -217,6 +234,15 @@ if __name__ == "__main__":
         help="Frames with E > threshold are filtered out before optimization.",
     )
     parser.add_argument(
+        "--energy-similarity",
+        type=float,
+        default=None,
+        help=(
+            "If set (eV), drop frames whose energy is within this tolerance "
+            "of an already-kept frame (lowest-energy wins)."
+        ),
+    )
+    parser.add_argument(
         "--model",
         default="deepmd_d3",
         help=f"Model key from MODELS dict. One of: {', '.join(MODELS)}.",
@@ -251,10 +277,14 @@ if __name__ == "__main__":
     calc = create_calc(args.model)
 
     indices_to_drop = point_calculation(
-        batch, calc, energy_threshold=args.energy_threshold
+        batch, calc,
+        energy_threshold=args.energy_threshold,
+        similarity_tol=args.energy_similarity,
     )
-    print(f"Dropping {len(indices_to_drop)} structures with E > "
-          f"{args.energy_threshold}: {indices_to_drop}")
+    print(f"Dropping {len(indices_to_drop)} structures (E > "
+          f"{args.energy_threshold}"
+          + (f", |dE| <= {args.energy_similarity}" if args.energy_similarity else "")
+          + f"): {indices_to_drop}")
 
     batch_filtered = clean_batch(indices_to_drop, batch)
     print(f"Batch size after filtering: {len(batch_filtered)}")
