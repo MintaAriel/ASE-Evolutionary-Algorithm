@@ -15,6 +15,9 @@ simulation:
 uspex:
   exe: USPEX
 
+uspex26:
+  exe: /home/genesis/Programs/USPEX26/uspex_2607.sh
+
 vasp:
   kpeg: /home/genesis/PycharmProjects/ASE-Evolutionary-Algorithm/data/runners/create_kpoints.sh
   vasp6: /home/genesis/PycharmProjects/ASE-Evolutionary-Algorithm/data/runners/run_vasp.sh
