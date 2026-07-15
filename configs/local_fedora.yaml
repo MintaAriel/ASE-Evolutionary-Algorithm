@@ -13,6 +13,9 @@ executables:
 uspex:
   exe: ~/uspex_matlab/program/application/archive/USPEX
 
+uspex26:
+  exe: /home/vito/uspex_python/USPEX26/uspex_2607_linux/uspex_2607.sh
+
 vasp:
   kpeg: /home/vito/PythonProjects/ASEProject/EA/data/runners/create_kpoints.sh
   vasp6: /home/vito/VASP/forces_FINAL/run_vasp.sh
