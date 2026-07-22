@@ -7,6 +7,7 @@ __pycache__/
 results/
 data/
 test/
+tests/
 models/
 MOLCRYS/
 

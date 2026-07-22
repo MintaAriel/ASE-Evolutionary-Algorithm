@@ -16,6 +16,9 @@ uspex:
   uspex_path: /home/sirena/Brian/uspex-matlab/application/archive/src
   mcr_root: /home/sirena/Brian/uspex-matlab
 
+uspex26:
+  exe: /home/sirena/Brian/Programs/uspex_2607
+
 vasp:
   kpeg: /home/sirena/Brian/VASP/create_kpoints.sh
   vasp6: /home/sirena/Brian/VASP/run_vasp.sh
