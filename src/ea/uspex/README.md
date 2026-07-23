@@ -8,12 +8,12 @@ Both feed candidate structures to a batched **DeepMD** relaxation worker
 
 ```
 ea/uspex/
-├── uspex26/   USPEX 26 — one continuous process, USER_CODE (abinitioCode 99)
+├── uspex26/   USPEX 26 — one continuous process, ASE (abinitioCode 20)
 │   ├── run_uspex26.py   driver (Python): starts USPEX 26, watches
 │   │                    Calculation/Calcfold_*, calls worker.py per wave
 │   ├── worker.py        batched DeepMD relaxer (Calculation/Calcfold_* AND
 │   │                    legacy CalcFold<N>)
-│   └── run_batch.py     per-Calcfold stub (waits for energy.txt)  ← commandExecutable
+│   └── run_batch.py     per-Calcfold stub (waits for output.xyz)  ← commandExecutable
 └── uspex10/   USPEX 10 (legacy) — repeated `USPEX -r`, whichCluster=1, job.info
     ├── run_uspex.py            per-CalcFolder resume loop
     ├── parallel_run_uspex.py   batched-DeepMD resume loop
@@ -29,7 +29,7 @@ The driver replaces the old `run_uspex26_deepmd.sh`. It is relocatable
 
 ```bash
 cd /path/to/your/uspex_run          # holds INPUT.txt, MOL_1, ...
-python /home/vito/PythonProjects/ASEProject/EA/src/ea/uspex/uspex26/run_uspex26.py \
+python /path/to/ASE-Evolutionary-Algorithm/src/ea/uspex/uspex26/run_uspex26.py \
        --model deepmd_d3 --device cpu
 # or, from anywhere:
 python .../uspex26/run_uspex26.py --workdir /path/to/your/uspex_run --device cuda
@@ -40,8 +40,23 @@ python .../uspex26/run_uspex26.py --workdir /path/to/your/uspex_run --device cud
   `configs/local_fedora.yaml` (`uspex26.exe`).
 - `worker.py` runs in the DeepMD env via `conda run -n <deepmd.conda_env>`
   unless `--worker-python` / `$WORKER_PY` gives an explicit interpreter.
-- In `INPUT.txt` set `commandExecutable` to this package's `run_batch.py`
-  (copy it next to your run or point at it directly).
+- Molecular runs must use USPEX's ASE interface. In `INPUT.txt` set:
+
+  ```text
+  % abinitioCode
+  20
+  % ENDabinit
+  ```
+
+  Code 20 passes structures through the order-preserving extended-XYZ files
+  `input.xyz` and `output.xyz`. Do not use USER_CODE/code 99 for `MOL_*`
+  runs: its POSCAR conversion groups atoms globally by element, so USPEX can
+  read the energy but cannot rebuild the relaxed molecular structure.
+- Set `commandExecutable` to this package's `run_batch.py` (copy it next to
+  your run or point at it directly). The stub waits for `output.xyz`; the
+  batched worker writes it atomically after relaxation.
+- `--smoke` abbreviates the optimizer to two FIRE and two LBFGS steps for an
+  integration check. It is not a production relaxation setting.
 
 See the original walkthrough (INPUT.txt edits, data flow, tuning knobs) in
 `/home/vito/uspex_python/USPEX_26_TESTS/test1/README_USPEX26_DEEPMD.md`.

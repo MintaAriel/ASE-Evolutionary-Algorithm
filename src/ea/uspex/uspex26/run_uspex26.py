@@ -2,20 +2,22 @@
 """Python driver for USPEX 26 + batched DeepMD relaxation.
 
 Replaces the old ``run_uspex26_deepmd.sh``.  USPEX 26 runs the whole
-evolutionary search in ONE continuous process.  For abinitioCode 99
-(USER_CODE) it drops, per structure of the current relaxation wave, a
+evolutionary search in ONE continuous process.  For abinitioCode 20
+(ASE, required for molecular atom-order preservation) it drops, per
+structure of the current relaxation wave, a
 folder::
 
     Calculation/Calcfold_<system>_<step>/
 
-containing ``geom.in`` (POSCAR) and launches ``commandExecutable``
-(``run_batch.py``), which just waits for ``energy.txt``.
+containing ``input.xyz`` and launches ``commandExecutable``
+(``run_batch.py``), which just waits for ``output.xyz``.  Legacy code-99
+``geom.in``/``energy.txt`` folders remain supported for non-molecular runs.
 ``numParallelCalcs`` sets how many run at once and USPEX pins one core to
 each (``whichCluster = 0`` -> 'local, free cores').
 
 Once a whole wave of folders is present and settled, this driver calls
 the batched worker (``worker.py``) ONCE; the worker relaxes every pending
-Calcfold and writes ``geom.out`` + ``energy.txt`` back, letting each
+Calcfold and writes ``output.xyz`` back, letting each
 ``run_batch.py`` exit so USPEX collects results and launches the next wave.
 
 The worker needs the DeepMD environment, so it is run in the ``deepmd``
@@ -33,6 +35,7 @@ Environment overrides: ``USPEX26_EXE``, ``WORKER_PY``, ``EA_CONFIG``.
 
 import argparse
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -54,6 +57,30 @@ POLL = 3        # seconds between scans
 SETTLE = 3      # require the pending set to be stable this long
 
 
+def validate_molecular_interface(workdir):
+    """Fail early if a molecular run is configured with order-losing code 99."""
+    workdir = Path(workdir)
+    if not any(workdir.glob("MOL_*")):
+        return
+
+    input_path = workdir / "INPUT.txt"
+    if not input_path.is_file():
+        sys.exit(f"[launcher] ERROR: INPUT.txt not found in {workdir}")
+
+    text = input_path.read_text(errors="replace")
+    match = re.search(
+        r"%\s*abinitioCode\s*\r?\n\s*([^\s%]+)", text, flags=re.IGNORECASE
+    )
+    code = match.group(1) if match else None
+    if code != "20":
+        found = code if code is not None else "missing"
+        sys.exit(
+            "[launcher] ERROR: molecular MOL_* input requires abinitioCode 20 "
+            f"(found {found}). Code 99 globally groups atoms by element and "
+            "USPEX 26 cannot reconstruct the relaxed molecules."
+        )
+
+
 def resolve_uspex(cfg, override=None):
     """USPEX 26 binary: --uspex-exe -> $USPEX26_EXE -> config uspex26.exe -> default."""
     if override:
@@ -66,24 +93,30 @@ def resolve_uspex(cfg, override=None):
 
 
 def count_pending(workdir):
-    """Calcfold_* folders with a non-empty geom.in but no energy.txt."""
+    """Count ready Calcfold inputs that do not have their interface output."""
     base = Path(workdir) / CALC_DIR
     if not base.is_dir():
         return 0
     n = 0
     for d in base.glob("Calcfold_*"):
-        gi = d / "geom.in"
-        if (d.is_dir() and gi.is_file() and gi.stat().st_size > 0
-                and not (d / "energy.txt").is_file()):
+        ase_input = d / "input.xyz"
+        user_input = d / "geom.in"
+        ase_pending = (ase_input.is_file() and ase_input.stat().st_size > 0
+                       and not (d / "output.xyz").is_file())
+        user_pending = (user_input.is_file() and user_input.stat().st_size > 0
+                        and not (d / "energy.txt").is_file())
+        if d.is_dir() and (ase_pending or user_pending):
             n += 1
     return n
 
 
-def build_worker_cmd(cfg, workdir, model, device, worker_python):
+def build_worker_cmd(cfg, workdir, model, device, worker_python, smoke=False):
     """Command that runs worker.py in the DeepMD environment."""
     tail = [str(WORKER), str(workdir), "--model", model]
     if device:
         tail += ["--device", device]
+    if smoke:
+        tail.append("--smoke")
     if worker_python:
         return [worker_python, *tail]
     conda_env = (cfg.get("deepmd") or {}).get("conda_env", "deepmd_env")
@@ -96,7 +129,10 @@ def run_worker(cmd, workdir, n, device, log_path):
     env = os.environ.copy()
     env["PYTHONPATH"] = EA_SRC + os.pathsep + env.get("PYTHONPATH", "")
     with open(log_path, "a") as log:
-        subprocess.run(cmd, cwd=workdir, env=env, stdout=log, stderr=subprocess.STDOUT)
+        subprocess.run(
+            cmd, cwd=workdir, env=env, stdout=log,
+            stderr=subprocess.STDOUT, check=True,
+        )
 
 
 def main():
@@ -117,6 +153,9 @@ def main():
     p.add_argument("--keep", action="store_true",
                    help="Do NOT wipe Calculation/ CalculationTemp/ Specific/ "
                         "results1/ before starting")
+    p.add_argument("--smoke", action="store_true",
+                   help="Pass the abbreviated smoke-test optimization profile "
+                        "to the worker; do not use for production")
     args = p.parse_args()
 
     cfg = load_config()
@@ -130,6 +169,8 @@ def main():
     if not os.path.isdir(workdir):
         sys.exit(f"[launcher] ERROR: workdir not found: {workdir}")
 
+    validate_molecular_interface(workdir)
+
     os.chdir(workdir)
 
     # Fresh run: USPEX 26 regenerates these every launch.
@@ -137,7 +178,9 @@ def main():
         subprocess.run(["rm", "-rf", "Calculation", "CalculationTemp",
                         "Specific", "results1"], cwd=workdir)
 
-    worker_cmd = build_worker_cmd(cfg, workdir, args.model, device, args.worker_python)
+    worker_cmd = build_worker_cmd(
+        cfg, workdir, args.model, device, args.worker_python, args.smoke
+    )
     worker_log = os.path.join(workdir, "deepmd_worker.log")
 
     print(f"[launcher] workdir : {workdir}")
@@ -164,7 +207,7 @@ def main():
             n = count_pending(workdir)
             if n > 0:
                 # Wait until the wave stops growing, so USPEX has finished
-                # writing every geom.in before the batched worker reads them.
+                # writing every input file before the batched worker reads them.
                 time.sleep(SETTLE)
                 if count_pending(workdir) == n and proc.poll() is None:
                     run_worker(worker_cmd, workdir, n, device, worker_log)

@@ -6,20 +6,27 @@ this script processes ALL CalcFolders of the current USPEX generation in
 a single batched DeepMD evaluation:
 
     1. discover ``CalcFold[N]`` directories under the USPEX workdir,
-    2. read each ``geom.in`` (VASP / POSCAR format),
+    2. read each USPEX 26 ASE ``input.xyz`` (preferred) or legacy
+       USER_CODE ``geom.in`` file,
     3. run staged ParallelFIRE + ParallelLBFGS just like
        ``create_batch_deepmd.run_full_optimization``,
     4. (optional) compute Gamma-point ZPE per structure with
        ``ea.parallel.zpe.ParallelVibrations``,
-    5. write ``geom.out`` (VASP, direct) and ``energy.txt`` back into
-       each CalcFolder — energy.txt is written LAST so the
-       per-CalcFolder run-stub treats it as the completion marker.
+    5. write ``output.xyz`` with energy metadata (ASE/code 20) or legacy
+       ``geom.out`` + ``energy.txt`` (USER_CODE/code 99) back into each
+       CalcFolder.  The completion marker is published last/atomically.
+
+USPEX 26 molecular calculations must use the ASE/code-20 interface.  Its
+extended-XYZ files preserve molecule/template atom order.  The code-99 POSCAR
+writer groups all atoms globally by element, after which USPEX cannot rebuild
+the original molecular components even though it can still read energy.txt.
 
 Driven by ``run_uspex26.py`` (this package); not meant to be run
 N times in parallel — exactly once per USPEX 26 relaxation wave.
 """
 
 import argparse
+import os
 import re
 import sys
 import time
@@ -90,18 +97,46 @@ _CALC26_RE = re.compile(r"Calcfold_(\d+)_(.+)$")
 _CALC26_BASES = ("Calculation", "CalculationTemp")
 
 
+ASE_MODE = "ase"
+USER_CODE_MODE = "user_code"
+
+
+def calcfolder_mode(cf):
+    """Return the external-relaxation interface used by *cf*, if ready.
+
+    USPEX code 20 writes ``input.xyz`` and consumes ``output.xyz``.  Legacy
+    code 99 writes ``geom.in`` and consumes ``geom.out`` + ``energy.txt``.
+    Prefer ASE if stale files from both interfaces happen to coexist.
+    """
+    cf = Path(cf)
+    ase_input = cf / "input.xyz"
+    if ase_input.is_file() and ase_input.stat().st_size > 0:
+        return ASE_MODE
+
+    user_input = cf / "geom.in"
+    if user_input.is_file() and user_input.stat().st_size > 0:
+        return USER_CODE_MODE
+
+    return None
+
+
 def _pending(cf):
-    """A calc folder is pending if it has a non-empty geom.in but no energy.txt."""
-    gi = cf / "geom.in"
-    if not (gi.is_file() and gi.stat().st_size > 0):
-        return False
-    return not (cf / "energy.txt").is_file()
+    """Whether a calc folder has a complete input but no completion marker."""
+    mode = calcfolder_mode(cf)
+    if mode == ASE_MODE:
+        return not (cf / "output.xyz").is_file()
+    if mode == USER_CODE_MODE:
+        return not (cf / "energy.txt").is_file()
+    return False
 
 
 def discover_calcfolders(workdir):
-    """Return [(sort_key, path)] for calc folders that have a geom.in but no
-    energy.txt.  Supports both the legacy layout ('CalcFold<N>' under the
-    workdir) and USPEX 26 ('Calculation/Calcfold_<system>_<step>')."""
+    """Return pending ``(sort_key, path)`` calculation folders.
+
+    Supports both the legacy layout (``CalcFold<N>`` under the workdir) and
+    USPEX 26 (``Calculation/Calcfold_<system>_<step>``), as well as the ASE
+    and legacy USER_CODE file protocols.
+    """
     workdir = Path(workdir)
     out = []
 
@@ -142,19 +177,27 @@ def _reset_traj_files(workdir, out_dir):
             print(f"[batch_worker] removed stale trajectory: {f}")
 
 
-def run_full_optimization(batch, calc, out_dir):
+def run_full_optimization(
+    batch,
+    calc,
+    out_dir,
+    *,
+    fire_steps=FIRE_STEPS,
+    lbfgs_steps=LBFGS_STEPS,
+    lbfgs_stages=LBFGS_STAGES,
+):
     evaluator = make_evaluator(calc)
 
     print(f"\n=== ParallelFIRE  fmax={FIRE_FMAX}  on {len(batch)} structures ===")
     opt = ParallelFIRE(batch, batch_evaluator=evaluator,
-                       fmax=FIRE_FMAX, max_steps=FIRE_STEPS, maxstep=MAXSTEP)
+                       fmax=FIRE_FMAX, max_steps=fire_steps, maxstep=MAXSTEP)
     opt.run()
     batch = opt.get_atoms()
 
-    for fmax in LBFGS_STAGES:
+    for fmax in lbfgs_stages:
         print(f"\n=== ParallelLBFGS  fmax={fmax} ===")
         opt = ParallelLBFGS(batch, batch_evaluator=evaluator,
-                            fmax=fmax, max_steps=LBFGS_STEPS,
+                            fmax=fmax, max_steps=lbfgs_steps,
                             maxstep=MAXSTEP, memory=LBFGS_MEMORY)
         opt.run(out_dir=out_dir)
         batch = opt.get_atoms()
@@ -185,16 +228,33 @@ def compute_zpe(batch, calc):
 # Output writing
 # ---------------------------------------------------------------------------
 
-def write_calcfolder_result(cf_path, atoms, energy):
-    """Write geom.out then energy.txt (energy.txt is the completion marker)."""
-    write(cf_path / "geom.out", atoms, format="vasp", direct=True)
-    (cf_path / "energy.txt").write_text(f"{energy}\n")
+def _write_ase_result(cf_path, atoms, energy):
+    """Atomically publish an order-preserving USPEX ASE ``output.xyz``."""
+    output_path = cf_path / "output.xyz"
+    temporary_path = cf_path / ".output.xyz.tmp"
+    output_atoms = atoms.copy()
+    output_atoms.info["energy"] = float(energy)
+    write(temporary_path, output_atoms, format="extxyz")
+    os.replace(temporary_path, output_path)
 
 
-def write_failure(cf_path, atoms):
+def write_calcfolder_result(cf_path, atoms, energy, mode):
+    """Write a result using the interface with which USPEX made the input."""
+    cf_path = Path(cf_path)
+    if mode == ASE_MODE:
+        _write_ase_result(cf_path, atoms, energy)
+        return
+    if mode == USER_CODE_MODE:
+        # energy.txt remains the legacy completion marker and is written last.
+        write(cf_path / "geom.out", atoms, format="vasp", direct=True)
+        (cf_path / "energy.txt").write_text(f"{energy}\n")
+        return
+    raise ValueError(f"Unknown USPEX calc-folder mode: {mode!r}")
+
+
+def write_failure(cf_path, atoms, mode):
     """Fallback: keep input structure, energy = 0 (matches uspex_deepmd_gfnff)."""
-    write(cf_path / "geom.out", atoms, format="vasp", direct=True)
-    (cf_path / "energy.txt").write_text("0\n")
+    write_calcfolder_result(cf_path, atoms, 0.0, mode)
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +281,9 @@ def main():
     p.add_argument("--traj-name", default="batch.traj",
                    help="Filename for the assembled input trajectory "
                         "(written under workdir)")
+    p.add_argument("--smoke", action="store_true",
+                   help="Run a minimal FIRE/LBFGS sequence for integration "
+                        "smoke tests; do not use for production relaxation")
     args = p.parse_args()
 
     workdir = args.workdir.expanduser().resolve()
@@ -234,16 +297,35 @@ def main():
     print(f"[batch_worker] {len(calcfolders)} pending CalcFolders")
 
     # ---- read inputs -------------------------------------------------------
-    indices, paths, atoms_in = [], [], []
+    indices, paths, modes, atoms_in = [], [], [], []
     for idx, cf in calcfolders:
+        mode = calcfolder_mode(cf)
         try:
-            a = read(cf / "geom.in", format="vasp")
+            if mode == ASE_MODE:
+                a = read(cf / "input.xyz", format="extxyz")
+            elif mode == USER_CODE_MODE:
+                a = read(cf / "geom.in", format="vasp")
+            else:
+                raise ValueError("no supported non-empty input file")
         except Exception as e:
-            print(f"  [warn] {cf.name}: failed to read geom.in: {e}")
+            print(f"  [warn] {cf.name}: failed to read relaxation input: {e}")
             continue
         indices.append(idx)
         paths.append(cf)
+        modes.append(mode)
         atoms_in.append(a)
+
+    if not atoms_in:
+        sys.exit("[batch_worker] no readable pending structures")
+
+    mode_counts = {mode: modes.count(mode) for mode in sorted(set(modes))}
+    print(f"[batch_worker] interfaces: {mode_counts}")
+    if USER_CODE_MODE in mode_counts and (workdir / "MOL_1").is_file():
+        sys.exit(
+            "[batch_worker] molecular MOL_* input detected with legacy USPEX "
+            "USER_CODE/code 99. Use abinitioCode 20 so extended XYZ preserves "
+            "molecular atom order."
+        )
 
     # ---- relax -------------------------------------------------------------
     out_dir = workdir / "batch_out"
@@ -267,7 +349,17 @@ def main():
         keep_idx = keep_idx[: args.size]
     batch = [atoms_in[i].copy() for i in keep_idx]
 
-    relaxed, energies = run_full_optimization(batch, calc, out_dir)
+    optimization_kwargs = {}
+    if args.smoke:
+        optimization_kwargs = {
+            "fire_steps": 2,
+            "lbfgs_steps": 2,
+            "lbfgs_stages": (0.03,),
+        }
+        print("[batch_worker] SMOKE profile: abbreviated relaxation")
+    relaxed, energies = run_full_optimization(
+        batch, calc, out_dir, **optimization_kwargs
+    )
 
     # ---- ZPE ---------------------------------------------------------------
     if args.zpe:
@@ -287,15 +379,17 @@ def main():
     for i, cf in enumerate(paths):
         try:
             if i in final_energies:
-                write_calcfolder_result(cf, final_atoms[i], final_energies[i])
+                write_calcfolder_result(
+                    cf, final_atoms[i], final_energies[i], modes[i]
+                )
                 n_ok += 1
             else:
-                write_failure(cf, atoms_in[i])
+                write_failure(cf, atoms_in[i], modes[i])
                 n_fail += 1
         except Exception:
             print(f"[batch_worker] failed to write {cf.name}:", traceback.format_exc())
             try:
-                write_failure(cf, atoms_in[i])
+                write_failure(cf, atoms_in[i], modes[i])
             except Exception:
                 pass
             n_fail += 1
