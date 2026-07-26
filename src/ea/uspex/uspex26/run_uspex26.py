@@ -20,6 +20,14 @@ the batched worker (``worker.py``) ONCE; the worker relaxes every pending
 Calcfold and writes ``output.xyz`` back, letting each
 ``run_batch.py`` exit so USPEX collects results and launches the next wave.
 
+That per-wave batching is a GPU strategy.  With ``--worker cpu`` the driver
+instead starts ``worker_cpu.py`` once, in watch mode, for the whole search:
+it keeps one DeepMD process per core alive and relaxes each structure
+independently as its folder appears, so no core waits on a batch barrier.
+Pick the cores with ``--cores`` (a count like ``8``, or a range like
+``0-11``); under SLURM the selection is intersected with the job's
+allocation.
+
 The worker needs the DeepMD environment, so it is run in the ``deepmd``
 conda env (``deepmd.conda_env`` in the EA config) via ``conda run`` unless
 ``--worker-python`` / ``$WORKER_PY`` points at an explicit interpreter.
@@ -50,11 +58,14 @@ from ea.utils.config import load_config
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 WORKER = SCRIPT_DIR / "worker.py"
+WORKER_CPU = SCRIPT_DIR / "worker_cpu.py"
 CALC_DIR = "Calculation"      # USPEX 26 base_calc_folder
 DEFAULT_USPEX = "/home/vito/uspex_python/USPEX26/uspex_2607_linux/uspex_2607.sh"
 
 POLL = 3        # seconds between scans
 SETTLE = 3      # require the pending set to be stable this long
+STOP_FILE = ".cpu_worker_stop"   # graceful-stop marker for worker_cpu --watch
+CPU_WORKER_GRACE = 1800          # seconds to let in-flight relaxations finish
 
 
 def validate_molecular_interface(workdir):
@@ -110,29 +121,101 @@ def count_pending(workdir):
     return n
 
 
-def build_worker_cmd(cfg, workdir, model, device, worker_python, smoke=False):
-    """Command that runs worker.py in the DeepMD environment."""
-    tail = [str(WORKER), str(workdir), "--model", model]
-    if device:
-        tail += ["--device", device]
-    if smoke:
-        tail.append("--smoke")
+def _in_deepmd_env(cfg, worker_python, tail):
+    """Wrap a worker command so it runs with the DeepMD dependencies."""
     if worker_python:
         return [worker_python, *tail]
     conda_env = (cfg.get("deepmd") or {}).get("conda_env", "deepmd_env")
     return ["conda", "run", "--no-capture-output", "-n", conda_env, "python", *tail]
 
 
+def build_worker_cmd(cfg, workdir, model, device, worker_python, smoke=False):
+    """Command that runs the batched (GPU-shaped) worker.py."""
+    tail = [str(WORKER), str(workdir), "--model", model]
+    if device:
+        tail += ["--device", device]
+    if smoke:
+        tail.append("--smoke")
+    return _in_deepmd_env(cfg, worker_python, tail)
+
+
+def build_cpu_worker_cmd(cfg, workdir, model, worker_python, args, stop_file):
+    """Command that runs worker_cpu.py in watch mode for the whole search."""
+    tail = [str(WORKER_CPU), str(workdir), "--model", model,
+            "--watch", "--stop-file", str(stop_file),
+            "--threads", str(args.threads)]
+    if args.cores:
+        tail += ["--cores", str(args.cores)]
+    if args.workers:
+        tail += ["--workers", str(args.workers)]
+    if args.smt:
+        tail.append("--smt")
+    if args.oversubscribe:
+        tail.append("--oversubscribe")
+    if args.no_pin:
+        tail.append("--no-pin")
+    if args.mem_per_worker_gb is not None:
+        tail += ["--mem-per-worker-gb", str(args.mem_per_worker_gb)]
+    if args.reserve_gb is not None:
+        tail += ["--reserve-gb", str(args.reserve_gb)]
+    if args.smoke:
+        tail.append("--smoke")
+    return _in_deepmd_env(cfg, worker_python, tail)
+
+
+def worker_env():
+    """Environment for the workers: this checkout's ``src`` on PYTHONPATH."""
+    env = os.environ.copy()
+    env["PYTHONPATH"] = EA_SRC + os.pathsep + env.get("PYTHONPATH", "")
+    return env
+
+
 def run_worker(cmd, workdir, n, device, log_path):
     print(f"[launcher] {time.strftime('%H:%M:%S')} relaxing wave of {n} "
           f"folder(s) with DeepMD ({device})", flush=True)
-    env = os.environ.copy()
-    env["PYTHONPATH"] = EA_SRC + os.pathsep + env.get("PYTHONPATH", "")
     with open(log_path, "a") as log:
         subprocess.run(
-            cmd, cwd=workdir, env=env, stdout=log,
+            cmd, cwd=workdir, env=worker_env(), stdout=log,
             stderr=subprocess.STDOUT, check=True,
         )
+
+
+def start_cpu_worker(cmd, workdir, log_path):
+    """Launch the per-structure CPU worker in watch mode for the whole run."""
+    log = open(log_path, "a")
+    proc = subprocess.Popen(cmd, cwd=workdir, env=worker_env(), stdout=log,
+                            stderr=subprocess.STDOUT)
+    print(f"[launcher] CPU worker PID {proc.pid} (watch mode, "
+          f"log: {os.path.basename(log_path)})", flush=True)
+    return proc, log
+
+
+def stop_cpu_worker(proc, stop_file, timeout=CPU_WORKER_GRACE):
+    """Ask the CPU worker to finish in-flight relaxations, then make sure it did.
+
+    The stop file is the graceful path: the worker publishes the results it is
+    already computing before exiting, so no structure is lost.
+    """
+    if proc is None or proc.poll() is not None:
+        return
+    print(f"[launcher] asking CPU worker (PID {proc.pid}) to stop after its "
+          f"in-flight relaxations (up to {timeout}s)", flush=True)
+    try:
+        Path(stop_file).touch()
+    except OSError as exc:
+        print(f"[launcher] could not create stop file {stop_file}: {exc}",
+              flush=True)
+    try:
+        proc.wait(timeout=timeout)
+        return
+    except subprocess.TimeoutExpired:
+        print(f"[launcher] CPU worker still running; terminating", flush=True)
+    proc.terminate()
+    try:
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        print("[launcher] CPU worker ignored SIGTERM; killing", flush=True)
+        proc.kill()
 
 
 def main():
@@ -143,8 +226,39 @@ def main():
     p.add_argument("--model", default="deepmd_d3",
                    help="DeepMD model key (default: deepmd_d3)")
     p.add_argument("--device", default=None,
-                   help="DeepMD device: 'cpu' (default) or 'cuda' "
-                        "(falls back to config deepmd.device)")
+                   help="DeepMD device for the batched worker: 'cpu' (default) "
+                        "or 'cuda' (falls back to config deepmd.device)")
+    p.add_argument("--worker", choices=("batch", "cpu"), default="batch",
+                   help="'batch' (default): one batched relaxation per wave "
+                        "(worker.py, built for a GPU). 'cpu': one independent "
+                        "relaxation per core, run continuously (worker_cpu.py)")
+
+    cpu = p.add_argument_group(
+        "cpu worker (--worker cpu)",
+        "Core selection for the per-structure CPU worker. Intersected with "
+        "this process' affinity mask, so a SLURM allocation is respected.")
+    cpu.add_argument("--cores", default=None,
+                     help="How many cores, or exactly which: '8' (count), "
+                          "'0-11' (range), '0,2,4-6' (list). "
+                          "Default: every allowed physical core")
+    cpu.add_argument("--threads", type=int, default=1,
+                     help="CPUs/threads per relaxation (default: 1)")
+    cpu.add_argument("--workers", type=int, default=None,
+                     help="Cap on concurrent relaxations "
+                          "(default: as many as the cores allow)")
+    cpu.add_argument("--smt", action="store_true",
+                     help="Also use SMT sibling threads as separate workers")
+    cpu.add_argument("--oversubscribe", action="store_true",
+                     help="Allow --workers to exceed the available cores")
+    cpu.add_argument("--no-pin", action="store_true",
+                     help="Do not set CPU affinity, only cap thread pools")
+    cpu.add_argument("--mem-per-worker-gb", type=float, default=None,
+                     help="RAM one relaxation needs; clamps the worker count "
+                          "so the node does not swap (worker default: 3.0, "
+                          "0 disables)")
+    cpu.add_argument("--reserve-gb", type=float, default=None,
+                     help="RAM held back for USPEX itself and the OS "
+                          "(worker default: 2.0)")
     p.add_argument("--uspex-exe", default=None,
                    help="USPEX 26 binary (default: config uspex26.exe)")
     p.add_argument("--worker-python", default=os.environ.get("WORKER_PY"),
@@ -163,6 +277,13 @@ def main():
     uspex = resolve_uspex(cfg, args.uspex_exe)
     device = args.device or (cfg.get("deepmd") or {}).get("device", "cpu")
 
+    if args.worker == "cpu":
+        if args.device and args.device != "cpu":
+            sys.exit(f"[launcher] ERROR: --worker cpu cannot run on "
+                     f"--device {args.device}; drop --device or use "
+                     f"--worker batch")
+        device = "cpu"
+
     if not (os.path.isfile(uspex) and os.access(uspex, os.X_OK)):
         sys.exit(f"[launcher] ERROR: USPEX 26 binary not found/executable: {uspex}\n"
                  f"[launcher]        set --uspex-exe, $USPEX26_EXE, or uspex26.exe in the EA config.")
@@ -178,13 +299,24 @@ def main():
         subprocess.run(["rm", "-rf", "Calculation", "CalculationTemp",
                         "Specific", "results1"], cwd=workdir)
 
-    worker_cmd = build_worker_cmd(
-        cfg, workdir, args.model, device, args.worker_python, args.smoke
-    )
+    cpu_mode = args.worker == "cpu"
+    stop_file = os.path.join(workdir, STOP_FILE)
+    if cpu_mode:
+        # A leftover marker from a previous run would stop the worker at once.
+        if os.path.exists(stop_file):
+            os.remove(stop_file)
+        worker_cmd = build_cpu_worker_cmd(
+            cfg, workdir, args.model, args.worker_python, args, stop_file
+        )
+    else:
+        worker_cmd = build_worker_cmd(
+            cfg, workdir, args.model, device, args.worker_python, args.smoke
+        )
     worker_log = os.path.join(workdir, "deepmd_worker.log")
 
     print(f"[launcher] workdir : {workdir}")
     print(f"[launcher] uspex26 : {uspex}")
+    print(f"[launcher] mode    : {'per-structure CPU pool' if cpu_mode else 'batched per wave'}")
     print(f"[launcher] worker  : {' '.join(worker_cmd)}")
     print(f"[launcher] starting USPEX 26 (model={args.model}, device={device})", flush=True)
 
@@ -193,7 +325,13 @@ def main():
                             stderr=subprocess.STDOUT)
     print(f"[launcher] USPEX 26 PID {proc.pid}  (log: uspex_run.log)", flush=True)
 
+    cpu_proc = cpu_log = None
+    if cpu_mode:
+        cpu_proc, cpu_log = start_cpu_worker(worker_cmd, workdir, worker_log)
+
     def cleanup(*_):
+        if cpu_mode:
+            stop_cpu_worker(cpu_proc, stop_file)
         if proc.poll() is None:
             print(f"[launcher] stopping USPEX 26 (PID {proc.pid})", flush=True)
             proc.terminate()
@@ -202,26 +340,55 @@ def main():
     signal.signal(signal.SIGTERM, lambda *_: (cleanup(), sys.exit(143)))
 
     try:
-        print(f"[launcher] DeepMD worker driver started (worker: {WORKER})", flush=True)
-        while proc.poll() is None:
+        if cpu_mode:
+            # The worker watches for Calcfolds itself; just supervise the pair.
+            print(f"[launcher] CPU worker driver started (worker: {WORKER_CPU})",
+                  flush=True)
+            while proc.poll() is None:
+                if cpu_proc.poll() is not None:
+                    print(f"[launcher] ERROR: CPU worker exited "
+                          f"(code {cpu_proc.returncode}) while USPEX is still "
+                          f"running — see {os.path.basename(worker_log)}. "
+                          f"Stopping USPEX.", flush=True)
+                    break
+                time.sleep(POLL)
+            else:
+                print("[launcher] USPEX 26 finished", flush=True)
+            n = count_pending(workdir)
+            if n and cpu_proc.poll() is None:
+                # cleanup() below sets the stop file, and the worker then only
+                # finishes what it already started -- it accepts no new
+                # folders. Anything still unclaimed here stays unrelaxed, but
+                # USPEX has exited so nothing is waiting on it either.
+                print(f"[launcher] {n} folder(s) were still pending when USPEX "
+                      f"exited; the CPU worker publishes its in-flight "
+                      f"relaxations only", flush=True)
+        else:
+            print(f"[launcher] DeepMD worker driver started (worker: {WORKER})",
+                  flush=True)
+            while proc.poll() is None:
+                n = count_pending(workdir)
+                if n > 0:
+                    # Wait until the wave stops growing, so USPEX has finished
+                    # writing every input file before the batched worker reads them.
+                    time.sleep(SETTLE)
+                    if count_pending(workdir) == n and proc.poll() is None:
+                        run_worker(worker_cmd, workdir, n, device, worker_log)
+                        continue
+                time.sleep(POLL)
+
+            print("[launcher] USPEX 26 finished; final worker sweep", flush=True)
             n = count_pending(workdir)
             if n > 0:
-                # Wait until the wave stops growing, so USPEX has finished
-                # writing every input file before the batched worker reads them.
-                time.sleep(SETTLE)
-                if count_pending(workdir) == n and proc.poll() is None:
-                    run_worker(worker_cmd, workdir, n, device, worker_log)
-                    continue
-            time.sleep(POLL)
-
-        print("[launcher] USPEX 26 finished; final worker sweep", flush=True)
-        n = count_pending(workdir)
-        if n > 0:
-            run_worker(worker_cmd, workdir, n, device, worker_log)
+                run_worker(worker_cmd, workdir, n, device, worker_log)
     finally:
         cleanup()
         rc = proc.wait()
         uspex_log.close()
+        if cpu_log is not None:
+            cpu_log.close()
+        if cpu_mode and os.path.exists(stop_file):
+            os.remove(stop_file)
         print(f"[launcher] done (USPEX exit={rc})", flush=True)
 
 

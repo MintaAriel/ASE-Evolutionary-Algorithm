@@ -39,17 +39,9 @@ from ea.parallel.create_batch import batch_calculator_deepmd
 from ea.parallel.FIRE_parallel import ParallelFIRE
 from ea.parallel.LBFGS_parallel import ParallelLBFGS
 from ea.parallel.zpe import ParallelVibrations
+from ea.uspex.models import MODELS, resolve_model
 from ea.utils.config import load_config
 
-
-MODELS = {
-    'base_deepmd': 'dpa3_12.03.2026.pth',
-    'deepmd_d3': 'dpa3-d3_torch.pth',
-    'deepmd_d4': 'dpa3-d4.pth',
-    'deepmd_d3_abs': 'dpa3-d3_abs_torch.pth',
-    'deepmd_d3_mbj': 'dpa3-d3-cpu_mbj.pth',
-    'deepmd_d3_mbj_abs': 'dpa3-d3-cpu_mbj_abs.pth',
-}
 
 LBFGS_STAGES = (0.03, 0.01, 0.005, 0.002, 0.001)
 FIRE_FMAX = 0.10
@@ -63,17 +55,10 @@ LBFGS_MEMORY = 40
 # Calculator
 # ---------------------------------------------------------------------------
 
-def _resolve_model(models_dir, key):
-    path = Path(models_dir) / MODELS[key]
-    if not path.is_file():
-        raise FileNotFoundError(f"Model not found: {path}")
-    return path
-
-
 def make_calculator(model_key, device):
     from deepmd.calculator import DP
     cfg = load_config()
-    model_path = _resolve_model(cfg['deepmd']['models_path'], model_key)
+    model_path = resolve_model(cfg['deepmd']['models_path'], model_key)
     print(f"[batch_worker] loading {model_key} from {model_path} on {device}")
     return DP(model=str(model_path), device=device)
 
@@ -118,6 +103,17 @@ def calcfolder_mode(cf):
         return USER_CODE_MODE
 
     return None
+
+
+def read_calcfolder_input(cf, mode=None):
+    """Read the relaxation input of *cf* with the reader its interface needs."""
+    cf = Path(cf)
+    mode = mode or calcfolder_mode(cf)
+    if mode == ASE_MODE:
+        return read(cf / "input.xyz", format="extxyz")
+    if mode == USER_CODE_MODE:
+        return read(cf / "geom.in", format="vasp")
+    raise ValueError("no supported non-empty input file")
 
 
 def _pending(cf):
@@ -301,12 +297,7 @@ def main():
     for idx, cf in calcfolders:
         mode = calcfolder_mode(cf)
         try:
-            if mode == ASE_MODE:
-                a = read(cf / "input.xyz", format="extxyz")
-            elif mode == USER_CODE_MODE:
-                a = read(cf / "geom.in", format="vasp")
-            else:
-                raise ValueError("no supported non-empty input file")
+            a = read_calcfolder_input(cf, mode)
         except Exception as e:
             print(f"  [warn] {cf.name}: failed to read relaxation input: {e}")
             continue

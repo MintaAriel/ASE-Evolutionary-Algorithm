@@ -66,9 +66,9 @@ def batch_calculator_deepmd(batch_atoms_list, calculator):
           f"max_working={abs_obj.maximum_working_batch_size}  "
           f"min_not_working={abs_obj.minimal_not_working_batch_size}")
 
-    # abs_obj.current_batch_size = 128
-    print(f"[batch_calc] forced current_batch_size=128")
-
+    # Note: pinning current_batch_size (e.g. to 1 for a single-structure batch)
+    # was measured to make no difference to memory or speed here, so the batch
+    # size is left at deepmd's own choice.
     t0 = time.perf_counter()
     E, F, V = calculator.dp.eval(coords, cells, types)[:3]
     dt = time.perf_counter() - t0
