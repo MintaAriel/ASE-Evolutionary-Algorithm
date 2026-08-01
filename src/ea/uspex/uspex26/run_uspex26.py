@@ -59,6 +59,7 @@ from ea.utils.config import load_config
 SCRIPT_DIR = Path(__file__).resolve().parent
 WORKER = SCRIPT_DIR / "worker.py"
 WORKER_CPU = SCRIPT_DIR / "worker_cpu.py"
+WORKER_CPU_DYN = SCRIPT_DIR / "worker_cpu_dynamic.py"
 CALC_DIR = "Calculation"      # USPEX 26 base_calc_folder
 DEFAULT_USPEX = "/home/vito/uspex_python/USPEX26/uspex_2607_linux/uspex_2607.sh"
 
@@ -139,9 +140,15 @@ def build_worker_cmd(cfg, workdir, model, device, worker_python, smoke=False):
     return _in_deepmd_env(cfg, worker_python, tail)
 
 
-def build_cpu_worker_cmd(cfg, workdir, model, worker_python, args, stop_file):
-    """Command that runs worker_cpu.py in watch mode for the whole search."""
-    tail = [str(WORKER_CPU), str(workdir), "--model", model,
+def build_cpu_worker_cmd(cfg, workdir, model, worker_python, args, stop_file,
+                         dynamic=False):
+    """Command that runs the per-structure CPU worker in watch mode.
+
+    *dynamic* selects worker_cpu_dynamic.py, which sizes its own concurrency
+    from measured RSS instead of the static --mem-per-worker-gb clamp.
+    """
+    script = WORKER_CPU_DYN if dynamic else WORKER_CPU
+    tail = [str(script), str(workdir), "--model", model,
             "--watch", "--stop-file", str(stop_file),
             "--threads", str(args.threads)]
     if args.cores:
@@ -158,6 +165,13 @@ def build_cpu_worker_cmd(cfg, workdir, model, worker_python, args, stop_file):
         tail += ["--mem-per-worker-gb", str(args.mem_per_worker_gb)]
     if args.reserve_gb is not None:
         tail += ["--reserve-gb", str(args.reserve_gb)]
+    if dynamic:
+        for flag, value in (("--max-ram-gb", args.max_ram_gb),
+                            ("--min-node-free-gb", args.min_node_free_gb),
+                            ("--check-interval", args.check_interval),
+                            ("--admit-per-cycle", args.admit_per_cycle)):
+            if value is not None:
+                tail += [flag, str(value)]
     if args.smoke:
         tail.append("--smoke")
     return _in_deepmd_env(cfg, worker_python, tail)
@@ -228,13 +242,16 @@ def main():
     p.add_argument("--device", default=None,
                    help="DeepMD device for the batched worker: 'cpu' (default) "
                         "or 'cuda' (falls back to config deepmd.device)")
-    p.add_argument("--worker", choices=("batch", "cpu"), default="batch",
+    p.add_argument("--worker", choices=("batch", "cpu", "cpu-dyn"),
+                   default="batch",
                    help="'batch' (default): one batched relaxation per wave "
                         "(worker.py, built for a GPU). 'cpu': one independent "
-                        "relaxation per core, run continuously (worker_cpu.py)")
+                        "relaxation per core, run continuously (worker_cpu.py). "
+                        "'cpu-dyn': same, but concurrency is set by measured "
+                        "RAM instead of a fixed count (worker_cpu_dynamic.py)")
 
     cpu = p.add_argument_group(
-        "cpu worker (--worker cpu)",
+        "cpu worker (--worker cpu / cpu-dyn)",
         "Core selection for the per-structure CPU worker. Intersected with "
         "this process' affinity mask, so a SLURM allocation is respected.")
     cpu.add_argument("--cores", default=None,
@@ -259,6 +276,26 @@ def main():
     cpu.add_argument("--reserve-gb", type=float, default=None,
                      help="RAM held back for USPEX itself and the OS "
                           "(worker default: 2.0)")
+
+    dyn = p.add_argument_group(
+        "dynamic memory scheduler (--worker cpu-dyn)",
+        "Concurrency is decided from the measured resident size of the live "
+        "relaxations, so --mem-per-worker-gb only seeds the estimate.")
+    dyn.add_argument("--max-ram-gb", type=float, default=None,
+                     help="Total resident budget for all relaxations, GiB "
+                          "(default: allocation minus --reserve-gb). Set it "
+                          "below the cgroup limit so an overshoot queues "
+                          "instead of being OOM-killed")
+    dyn.add_argument("--min-node-free-gb", type=float, default=None,
+                     help="Stop admitting while the NODE's MemAvailable is "
+                          "below this, GiB (worker default: 24)")
+    dyn.add_argument("--check-interval", type=float, default=None,
+                     help="Seconds between admission decisions "
+                          "(worker default: 15)")
+    dyn.add_argument("--admit-per-cycle", type=int, default=None,
+                     help="Most workers to start per --check-interval "
+                          "(worker default: 1)")
+
     p.add_argument("--uspex-exe", default=None,
                    help="USPEX 26 binary (default: config uspex26.exe)")
     p.add_argument("--worker-python", default=os.environ.get("WORKER_PY"),
@@ -277,9 +314,9 @@ def main():
     uspex = resolve_uspex(cfg, args.uspex_exe)
     device = args.device or (cfg.get("deepmd") or {}).get("device", "cpu")
 
-    if args.worker == "cpu":
+    if args.worker in ("cpu", "cpu-dyn"):
         if args.device and args.device != "cpu":
-            sys.exit(f"[launcher] ERROR: --worker cpu cannot run on "
+            sys.exit(f"[launcher] ERROR: --worker {args.worker} cannot run on "
                      f"--device {args.device}; drop --device or use "
                      f"--worker batch")
         device = "cpu"
@@ -299,14 +336,16 @@ def main():
         subprocess.run(["rm", "-rf", "Calculation", "CalculationTemp",
                         "Specific", "results1"], cwd=workdir)
 
-    cpu_mode = args.worker == "cpu"
+    dyn_mode = args.worker == "cpu-dyn"
+    cpu_mode = args.worker in ("cpu", "cpu-dyn")
     stop_file = os.path.join(workdir, STOP_FILE)
     if cpu_mode:
         # A leftover marker from a previous run would stop the worker at once.
         if os.path.exists(stop_file):
             os.remove(stop_file)
         worker_cmd = build_cpu_worker_cmd(
-            cfg, workdir, args.model, args.worker_python, args, stop_file
+            cfg, workdir, args.model, args.worker_python, args, stop_file,
+            dynamic=dyn_mode
         )
     else:
         worker_cmd = build_worker_cmd(
@@ -316,7 +355,10 @@ def main():
 
     print(f"[launcher] workdir : {workdir}")
     print(f"[launcher] uspex26 : {uspex}")
-    print(f"[launcher] mode    : {'per-structure CPU pool' if cpu_mode else 'batched per wave'}")
+    mode_name = ("per-structure CPU pool, memory-scheduled" if dyn_mode
+                 else "per-structure CPU pool" if cpu_mode
+                 else "batched per wave")
+    print(f"[launcher] mode    : {mode_name}")
     print(f"[launcher] worker  : {' '.join(worker_cmd)}")
     print(f"[launcher] starting USPEX 26 (model={args.model}, device={device})", flush=True)
 
