@@ -304,6 +304,11 @@ def main():
     p.add_argument("--keep", action="store_true",
                    help="Do NOT wipe Calculation/ CalculationTemp/ Specific/ "
                         "results1/ before starting")
+    p.add_argument("--fresh", action="store_true",
+                   help="Confirm deleting an existing Calculation/ or "
+                        "results1/ and restarting at generation 1. Required "
+                        "whenever a previous search is present, so a stray "
+                        "relaunch cannot silently discard days of work")
     p.add_argument("--smoke", action="store_true",
                    help="Pass the abbreviated smoke-test optimization profile "
                         "to the worker; do not use for production")
@@ -331,8 +336,24 @@ def main():
 
     os.chdir(workdir)
 
-    # Fresh run: USPEX 26 regenerates these every launch.
+    # Fresh run: USPEX 26 regenerates these every launch.  Wiping stays the
+    # default for an empty workdir, but it is never silent once there is a
+    # search to lose: a requeue that relaunched this script destroyed four
+    # partial runs (37 h of relaxations) before anyone noticed, because USPEX
+    # restarts at generation 1 with no trace of what it deleted.
     if not args.keep:
+        existing = [d for d in ("Calculation", "results1")
+                    if os.path.isdir(os.path.join(workdir, d))
+                    and os.listdir(os.path.join(workdir, d))]
+        if existing and not args.fresh:
+            sys.exit(
+                f"[launcher] ERROR: {' and '.join(existing)} already hold a "
+                f"previous search under\n"
+                f"[launcher]        {workdir}\n"
+                f"[launcher]        Starting would delete it and restart at "
+                f"generation 1. Choose explicitly:\n"
+                f"[launcher]          --keep   leave it in place\n"
+                f"[launcher]          --fresh  delete it and start over")
         subprocess.run(["rm", "-rf", "Calculation", "CalculationTemp",
                         "Specific", "results1"], cwd=workdir)
 
@@ -384,7 +405,8 @@ def main():
     try:
         if cpu_mode:
             # The worker watches for Calcfolds itself; just supervise the pair.
-            print(f"[launcher] CPU worker driver started (worker: {WORKER_CPU})",
+            print(f"[launcher] CPU worker driver started "
+                  f"(worker: {WORKER_CPU_DYN if dyn_mode else WORKER_CPU})",
                   flush=True)
             while proc.poll() is None:
                 if cpu_proc.poll() is not None:
