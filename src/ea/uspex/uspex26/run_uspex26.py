@@ -20,13 +20,11 @@ the batched worker (``worker.py``) ONCE; the worker relaxes every pending
 Calcfold and writes ``output.xyz`` back, letting each
 ``run_batch.py`` exit so USPEX collects results and launches the next wave.
 
-That per-wave batching is a GPU strategy.  With ``--worker cpu`` the driver
-instead starts ``worker_cpu.py`` once, in watch mode, for the whole search:
-it keeps one DeepMD process per core alive and relaxes each structure
-independently as its folder appears, so no core waits on a batch barrier.
-Pick the cores with ``--cores`` (a count like ``8``, or a range like
-``0-11``); under SLURM the selection is intersected with the job's
-allocation.
+That per-wave batching is a single-GPU strategy.  With ``--worker gpu`` the
+driver instead starts ``worker_gpu.py`` once, in watch mode, with one DeepMD
+process per requested GPU.  With ``--worker cpu`` it starts ``worker_cpu.py``
+once, in watch mode, with one process per selected core.  Pick GPU IDs with
+``--gpu-ids 0,1,2`` or CPU cores with ``--cores``.
 
 The worker needs the DeepMD environment, so it is run in the ``deepmd``
 conda env (``deepmd.conda_env`` in the EA config) via ``conda run`` unless
@@ -60,6 +58,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 WORKER = SCRIPT_DIR / "worker.py"
 WORKER_CPU = SCRIPT_DIR / "worker_cpu.py"
 WORKER_CPU_DYN = SCRIPT_DIR / "worker_cpu_dynamic.py"
+WORKER_GPU = SCRIPT_DIR / "worker_gpu.py"
 CALC_DIR = "Calculation"      # USPEX 26 base_calc_folder
 DEFAULT_USPEX = "/home/vito/uspex_python/USPEX26/uspex_2607_linux/uspex_2607.sh"
 
@@ -67,6 +66,8 @@ POLL = 3        # seconds between scans
 SETTLE = 3      # require the pending set to be stable this long
 STOP_FILE = ".cpu_worker_stop"   # graceful-stop marker for worker_cpu --watch
 CPU_WORKER_GRACE = 1800          # seconds to let in-flight relaxations finish
+GPU_STOP_FILE = ".gpu_worker_stop"
+GPU_WORKER_GRACE = 1800          # seconds to let in-flight relaxations finish
 
 
 def validate_molecular_interface(workdir):
@@ -177,6 +178,16 @@ def build_cpu_worker_cmd(cfg, workdir, model, worker_python, args, stop_file,
     return _in_deepmd_env(cfg, worker_python, tail)
 
 
+def build_gpu_worker_cmd(cfg, workdir, model, worker_python, args, stop_file):
+    """Command that runs one persistent GPU worker process per GPU ID."""
+    tail = [str(WORKER_GPU), str(workdir), "--model", model,
+            "--gpu-ids", str(args.gpu_ids), "--threads",
+            str(args.gpu_threads), "--watch", "--stop-file", str(stop_file)]
+    if args.smoke:
+        tail.append("--smoke")
+    return _in_deepmd_env(cfg, worker_python, tail)
+
+
 def worker_env():
     """Environment for the workers: this checkout's ``src`` on PYTHONPATH."""
     env = os.environ.copy()
@@ -232,6 +243,40 @@ def stop_cpu_worker(proc, stop_file, timeout=CPU_WORKER_GRACE):
         proc.kill()
 
 
+def start_gpu_worker(cmd, workdir, log_path):
+    """Launch the per-GPU worker pool in watch mode for the whole run."""
+    log = open(log_path, "a")
+    proc = subprocess.Popen(cmd, cwd=workdir, env=worker_env(), stdout=log,
+                            stderr=subprocess.STDOUT)
+    print(f"[launcher] GPU worker PID {proc.pid} (watch mode, "
+          f"log: {os.path.basename(log_path)})", flush=True)
+    return proc, log
+
+
+def stop_gpu_worker(proc, stop_file, timeout=GPU_WORKER_GRACE):
+    """Ask the GPU worker to finish in-flight relaxations before exiting."""
+    if proc is None or proc.poll() is not None:
+        return
+    print(f"[launcher] asking GPU worker (PID {proc.pid}) to stop after its "
+          f"in-flight relaxations (up to {timeout}s)", flush=True)
+    try:
+        Path(stop_file).touch()
+    except OSError as exc:
+        print(f"[launcher] could not create stop file {stop_file}: {exc}",
+              flush=True)
+    try:
+        proc.wait(timeout=timeout)
+        return
+    except subprocess.TimeoutExpired:
+        print("[launcher] GPU worker still running; terminating", flush=True)
+    proc.terminate()
+    try:
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        print("[launcher] GPU worker ignored SIGTERM; killing", flush=True)
+        proc.kill()
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -242,13 +287,15 @@ def main():
     p.add_argument("--device", default=None,
                    help="DeepMD device for the batched worker: 'cpu' (default) "
                         "or 'cuda' (falls back to config deepmd.device)")
-    p.add_argument("--worker", choices=("batch", "cpu", "cpu-dyn"),
+    p.add_argument("--worker", choices=("batch", "cpu", "cpu-dyn", "gpu"),
                    default="batch",
                    help="'batch' (default): one batched relaxation per wave "
                         "(worker.py, built for a GPU). 'cpu': one independent "
                         "relaxation per core, run continuously (worker_cpu.py). "
                         "'cpu-dyn': same, but concurrency is set by measured "
-                        "RAM instead of a fixed count (worker_cpu_dynamic.py)")
+                        "RAM instead of a fixed count (worker_cpu_dynamic.py). "
+                        "'gpu': one persistent relaxation process per GPU "
+                        "(worker_gpu.py)")
 
     cpu = p.add_argument_group(
         "cpu worker (--worker cpu / cpu-dyn)",
@@ -276,6 +323,13 @@ def main():
     cpu.add_argument("--reserve-gb", type=float, default=None,
                      help="RAM held back for USPEX itself and the OS "
                           "(worker default: 2.0)")
+
+    gpu = p.add_argument_group("gpu worker (--worker gpu)")
+    gpu.add_argument("--gpu-ids", default="0",
+                     help="Host GPU IDs, e.g. '0,1,2' or '0-2' "
+                          "(default: 0)")
+    gpu.add_argument("--gpu-threads", type=int, default=2,
+                     help="CPU threads per GPU worker (default: 2)")
 
     dyn = p.add_argument_group(
         "dynamic memory scheduler (--worker cpu-dyn)",
@@ -325,6 +379,13 @@ def main():
                      f"--device {args.device}; drop --device or use "
                      f"--worker batch")
         device = "cpu"
+    elif args.worker == "gpu":
+        if args.device and args.device.lower() not in ("gpu", "cuda"):
+            sys.exit(f"[launcher] ERROR: --worker gpu requires a GPU device; "
+                     f"got --device {args.device}")
+        if args.gpu_threads < 1:
+            sys.exit("[launcher] ERROR: --gpu-threads must be >= 1")
+        device = "gpu"
 
     if not (os.path.isfile(uspex) and os.access(uspex, os.X_OK)):
         sys.exit(f"[launcher] ERROR: USPEX 26 binary not found/executable: {uspex}\n"
@@ -359,7 +420,11 @@ def main():
 
     dyn_mode = args.worker == "cpu-dyn"
     cpu_mode = args.worker in ("cpu", "cpu-dyn")
-    stop_file = os.path.join(workdir, STOP_FILE)
+    gpu_mode = args.worker == "gpu"
+    persistent_mode = cpu_mode or gpu_mode
+    stop_file = os.path.join(
+        workdir, GPU_STOP_FILE if gpu_mode else STOP_FILE
+    )
     if cpu_mode:
         # A leftover marker from a previous run would stop the worker at once.
         if os.path.exists(stop_file):
@@ -367,6 +432,13 @@ def main():
         worker_cmd = build_cpu_worker_cmd(
             cfg, workdir, args.model, args.worker_python, args, stop_file,
             dynamic=dyn_mode
+        )
+    elif gpu_mode:
+        # A leftover marker from a previous run would stop the worker at once.
+        if os.path.exists(stop_file):
+            os.remove(stop_file)
+        worker_cmd = build_gpu_worker_cmd(
+            cfg, workdir, args.model, args.worker_python, args, stop_file
         )
     else:
         worker_cmd = build_worker_cmd(
@@ -378,6 +450,7 @@ def main():
     print(f"[launcher] uspex26 : {uspex}")
     mode_name = ("per-structure CPU pool, memory-scheduled" if dyn_mode
                  else "per-structure CPU pool" if cpu_mode
+                 else "per-GPU relaxation pool" if gpu_mode
                  else "batched per wave")
     print(f"[launcher] mode    : {mode_name}")
     print(f"[launcher] worker  : {' '.join(worker_cmd)}")
@@ -388,13 +461,21 @@ def main():
                             stderr=subprocess.STDOUT)
     print(f"[launcher] USPEX 26 PID {proc.pid}  (log: uspex_run.log)", flush=True)
 
-    cpu_proc = cpu_log = None
+    worker_proc = worker_log_handle = None
     if cpu_mode:
-        cpu_proc, cpu_log = start_cpu_worker(worker_cmd, workdir, worker_log)
+        worker_proc, worker_log_handle = start_cpu_worker(
+            worker_cmd, workdir, worker_log
+        )
+    elif gpu_mode:
+        worker_proc, worker_log_handle = start_gpu_worker(
+            worker_cmd, workdir, worker_log
+        )
 
     def cleanup(*_):
         if cpu_mode:
-            stop_cpu_worker(cpu_proc, stop_file)
+            stop_cpu_worker(worker_proc, stop_file)
+        elif gpu_mode:
+            stop_gpu_worker(worker_proc, stop_file)
         if proc.poll() is None:
             print(f"[launcher] stopping USPEX 26 (PID {proc.pid})", flush=True)
             proc.terminate()
@@ -403,15 +484,18 @@ def main():
     signal.signal(signal.SIGTERM, lambda *_: (cleanup(), sys.exit(143)))
 
     try:
-        if cpu_mode:
+        if persistent_mode:
             # The worker watches for Calcfolds itself; just supervise the pair.
-            print(f"[launcher] CPU worker driver started "
-                  f"(worker: {WORKER_CPU_DYN if dyn_mode else WORKER_CPU})",
-                  flush=True)
+            worker_label = (
+                WORKER_CPU_DYN if dyn_mode else WORKER_CPU
+                if cpu_mode else WORKER_GPU
+            )
+            print(f"[launcher] persistent worker driver started "
+                  f"(worker: {worker_label})", flush=True)
             while proc.poll() is None:
-                if cpu_proc.poll() is not None:
-                    print(f"[launcher] ERROR: CPU worker exited "
-                          f"(code {cpu_proc.returncode}) while USPEX is still "
+                if worker_proc.poll() is not None:
+                    print(f"[launcher] ERROR: worker exited "
+                          f"(code {worker_proc.returncode}) while USPEX is still "
                           f"running — see {os.path.basename(worker_log)}. "
                           f"Stopping USPEX.", flush=True)
                     break
@@ -419,13 +503,13 @@ def main():
             else:
                 print("[launcher] USPEX 26 finished", flush=True)
             n = count_pending(workdir)
-            if n and cpu_proc.poll() is None:
+            if n and worker_proc.poll() is None:
                 # cleanup() below sets the stop file, and the worker then only
                 # finishes what it already started -- it accepts no new
                 # folders. Anything still unclaimed here stays unrelaxed, but
                 # USPEX has exited so nothing is waiting on it either.
                 print(f"[launcher] {n} folder(s) were still pending when USPEX "
-                      f"exited; the CPU worker publishes its in-flight "
+                      f"exited; the worker publishes its in-flight "
                       f"relaxations only", flush=True)
         else:
             print(f"[launcher] DeepMD worker driver started (worker: {WORKER})",
@@ -449,9 +533,9 @@ def main():
         cleanup()
         rc = proc.wait()
         uspex_log.close()
-        if cpu_log is not None:
-            cpu_log.close()
-        if cpu_mode and os.path.exists(stop_file):
+        if worker_log_handle is not None:
+            worker_log_handle.close()
+        if persistent_mode and os.path.exists(stop_file):
             os.remove(stop_file)
         print(f"[launcher] done (USPEX exit={rc})", flush=True)
 
