@@ -171,7 +171,7 @@ def node_available_gb():
 # Child process
 # ---------------------------------------------------------------------------
 
-def _child_entry(task, model_key, threads, pin, cores, result_q):
+def _child_entry(task, model_stages, threads, pin, cores, result_q):
     """Relax exactly one structure, publish it, report the peak, exit.
 
     Runs in a spawned process.  Affinity, thread caps and GPU masking have to
@@ -185,8 +185,8 @@ def _child_entry(task, model_key, threads, pin, cores, result_q):
                                                            pin=pin)
         worker_cpu.force_cpu_only()
 
-        calc = batch_worker.make_calculator(model_key, "cpu")
-        device = worker_cpu._assert_cpu(calc)
+        calc = batch_worker.make_calculators(model_stages, "cpu")
+        device = worker_cpu.assert_cpu_stages(calc)
         try:
             import torch
             # DP() resets the intra-op pool to 1; restore the requested width.
@@ -201,7 +201,8 @@ def _child_entry(task, model_key, threads, pin, cores, result_q):
         worker_cpu._STATE["cores"] = cores
         worker_cpu._STATE["threads"] = threads
         print(f"[cpu_dyn:{os.getpid()}] start {Path(task['path']).name} — "
-              f"{message}, {threads} thread(s), model={model_key} "
+              f"{message}, {threads} thread(s), "
+              f"model={worker_cpu.describe_models(model_stages)} "
               f"on {device or 'cpu'}", flush=True)
 
         result = worker_cpu._relax_one(task)
@@ -402,7 +403,7 @@ class MemoryScheduler:
 # Parent: main loop
 # ---------------------------------------------------------------------------
 
-def run_dynamic(workdir, chunks, model_key, threads, pin, profile, want_zpe,
+def run_dynamic(workdir, chunks, model_stages, threads, pin, profile, want_zpe,
                 sched, watch=False, check_interval=15.0, poll=3.0, settle=2.0,
                 admit_per_cycle=1, ramp_seconds=180.0,
                 head_priority_seconds=600.0, retries=1,
@@ -586,7 +587,7 @@ def run_dynamic(workdir, chunks, model_key, threads, pin, profile, want_zpe,
                 cores = free_chunks.popleft()
                 proc = ctx.Process(
                     target=_child_entry,
-                    args=(task, model_key, threads, pin, cores, result_q),
+                    args=(task, model_stages, threads, pin, cores, result_q),
                     daemon=False,
                 )
                 proc.start()
@@ -651,7 +652,8 @@ def build_parser():
     p.add_argument("workdir", type=Path,
                    help="USPEX working directory (holds Calculation/Calcfold_*)")
     p.add_argument("--model", default="deepmd_d3", choices=sorted(MODELS),
-                   help="DeepMD model key from the config's deepmd.models_path")
+                   help="DeepMD model key from the config's deepmd.models_path; "
+                        "ignored when INPUT.txt has a MODELS section")
     p.add_argument("--cores", default=None,
                    help="How many cores, or exactly which ones: '30' (a count), "
                         "'0-29' (a range) or '0,2,4-6' (a list). "
@@ -755,11 +757,11 @@ def main(argv=None):
     # Resolve the model in the parent: a missing file would otherwise only
     # surface once per child, one structure at a time.
     try:
-        model_path = resolve_model(load_config()["deepmd"]["models_path"],
-                                   args.model)
-    except (KeyError, FileNotFoundError) as exc:
+        model_stages = batch_worker.load_model_stages(workdir, args.model)
+        for line in batch_worker.describe_model_stages(model_stages):
+            print(f"[cpu_dyn] model {line}", flush=True)
+    except (KeyError, ValueError, FileNotFoundError) as exc:
         sys.exit(f"[cpu_dyn] {exc}")
-    print(f"[cpu_dyn] model {args.model}: {model_path}", flush=True)
 
     # ---- CPU inventory ----------------------------------------------------
     # Note: no clamp_workers_by_memory here.  The chunk count is only a
@@ -836,7 +838,7 @@ def main(argv=None):
     t0 = time.perf_counter()
     try:
         done, failed = run_dynamic(
-            workdir, chunks, args.model, args.threads, not args.no_pin,
+            workdir, chunks, model_stages, args.threads, not args.no_pin,
             profile, args.zpe, sched,
             watch=args.watch, check_interval=args.check_interval,
             poll=args.poll, settle=args.settle,

@@ -26,6 +26,7 @@ N times in parallel — exactly once per USPEX 26 relaxation wave.
 """
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -38,6 +39,7 @@ from ase.io import read, write
 from ea.parallel.create_batch import batch_calculator_deepmd
 from ea.parallel.FIRE_parallel import ParallelFIRE
 from ea.parallel.LBFGS_parallel import ParallelLBFGS
+from ea.io.read_input import parse_uspex26_workflow
 from ea.parallel.zpe import ParallelVibrations
 from ea.uspex.models import MODELS, resolve_model
 from ea.utils.config import load_config
@@ -55,12 +57,66 @@ LBFGS_MEMORY = 40
 # Calculator
 # ---------------------------------------------------------------------------
 
-def make_calculator(model_key, device):
+def resolve_model_spec(model):
+    """Model file for *model*: a ``MODELS`` key or a path to a model file."""
+    if model in MODELS:
+        return resolve_model(load_config()['deepmd']['models_path'], model)
+    path = Path(model).expanduser()
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"Model not found: {model!r} is neither a file nor a key of "
+            f"{', '.join(sorted(MODELS))}")
+    return path
+
+
+def make_calculator(model, device):
     from deepmd.calculator import DP
-    cfg = load_config()
-    model_path = resolve_model(cfg['deepmd']['models_path'], model_key)
-    print(f"[batch_worker] loading {model_key} from {model_path} on {device}")
+    model_path = resolve_model_spec(model)
+    print(f"[batch_worker] loading {model} from {model_path} on {device}")
     return DP(model=str(model_path), device=device)
+
+
+# ---------------------------------------------------------------------------
+# Model stages (MODELS in the USPEX INPUT.txt)
+# ---------------------------------------------------------------------------
+
+def load_model_stages(workdir, model_key):
+    """``[(fmax, model), ...]`` to relax with, picklable for worker pools.
+
+    When the workdir's ``INPUT.txt`` has a MODELS section each structure is
+    relaxed with its models in turn, each down to its own fmax.  Otherwise the
+    single *model_key* (``--model``) runs the default ``LBFGS_STAGES`` ladder,
+    marked by an fmax of None.
+    """
+    input_path = Path(workdir) / "INPUT.txt"
+    if input_path.is_file():
+        models = parse_uspex26_workflow(input_path, MODELS)['models']
+        if models:
+            return [(float(fmax), str(model)) for fmax, model in models]
+    return [(None, model_key)]
+
+
+def describe_model_stages(stages):
+    """Resolve every stage's model file (fails early) and describe them."""
+    return [f"{model} -> {resolve_model_spec(model)}" if fmax is None else
+            f"fmax {fmax}: {model} -> {resolve_model_spec(model)}"
+            for fmax, model in stages]
+
+
+def make_calculators(stages, device):
+    """Load the stage models; ``run_full_optimization`` accepts the result.
+
+    The single-model default returns a plain calculator, MODELS returns a list
+    of ``(fmax, calculator)`` stages.
+    """
+    if len(stages) == 1 and stages[0][0] is None:
+        return make_calculator(stages[0][1], device)
+    return [(fmax, make_calculator(model, device)) for fmax, model in stages]
+
+
+def final_calculator(calc):
+    """The calculator that produced the final energies (used for ZPE)."""
+    return calc[-1][1] if isinstance(calc, list) else calc
 
 
 def make_evaluator(calculator):
@@ -181,22 +237,71 @@ def run_full_optimization(
     fire_steps=FIRE_STEPS,
     lbfgs_steps=LBFGS_STEPS,
     lbfgs_stages=LBFGS_STAGES,
+    timing_path=None,
 ):
-    evaluator = make_evaluator(calc)
+    """FIRE then a ladder of LBFGS stages.
 
-    print(f"\n=== ParallelFIRE  fmax={FIRE_FMAX}  on {len(batch)} structures ===")
-    opt = ParallelFIRE(batch, batch_evaluator=evaluator,
-                       fmax=FIRE_FMAX, max_steps=fire_steps, maxstep=MAXSTEP)
-    opt.run()
-    batch = opt.get_atoms()
+    *calc* is one calculator, or a list of ``(fmax, calculator)`` model stages
+    from ``make_calculators``.  Each model stage continues from the previous
+    one with the *lbfgs_stages* thresholds between its predecessor's fmax and
+    its own, then LBFGS to its own fmax.
+    """
+    model_stages = calc if isinstance(calc, list) else [(None, calc)]
 
-    for fmax in lbfgs_stages:
-        print(f"\n=== ParallelLBFGS  fmax={fmax} ===")
-        opt = ParallelLBFGS(batch, batch_evaluator=evaluator,
-                            fmax=fmax, max_steps=lbfgs_steps,
-                            maxstep=MAXSTEP, memory=LBFGS_MEMORY)
-        opt.run(out_dir=out_dir)
-        batch = opt.get_atoms()
+    def timed_stage(kind, threshold, create, run):
+        # Opt-in instrumentation; ordinary production runs take the same path
+        # without CUDA synchronizations or additional files.
+        if timing_path is not None:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            started = time.perf_counter()
+        optimizer = create()
+        run(optimizer)
+        if timing_path is not None:
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            elapsed = time.perf_counter() - started
+            row = dict(optimizer=kind, target_fmax=threshold, seconds=elapsed,
+                       iterations=optimizer.nsteps_done,
+                       converged=[bool(s.converged) for s in optimizer.states],
+                       final_fmax=[float(s.fmax_current) for s in optimizer.states],
+                       energies=[float(s.energy) for s in optimizer.states])
+            with Path(timing_path).open('a') as stream:
+                stream.write(json.dumps(row) + '\n')
+            print('[stage_timing] ' + json.dumps(row), flush=True)
+        return optimizer
+
+    previous = float("inf")
+    for n, (target, stage_calc) in enumerate(model_stages):
+        evaluator = make_evaluator(stage_calc)
+        if target is None:
+            ladder = list(lbfgs_stages)
+        else:
+            ladder = [f for f in lbfgs_stages if previous > f > target] + [target]
+            print(f"\n=== model stage {n + 1}/{len(model_stages)}  "
+                  f"target fmax={target} ===")
+
+        if n == 0:
+            fire_fmax = FIRE_FMAX if target is None else max(FIRE_FMAX, target)
+            print(f"\n=== ParallelFIRE  fmax={fire_fmax}  "
+                  f"on {len(batch)} structures ===")
+            opt = timed_stage('FIRE', fire_fmax,
+                              lambda: ParallelFIRE(batch, batch_evaluator=evaluator,
+                                  fmax=fire_fmax, max_steps=fire_steps,
+                                  maxstep=MAXSTEP),
+                              lambda optimizer: optimizer.run())
+            batch = opt.get_atoms()
+
+        for fmax in ladder:
+            print(f"\n=== ParallelLBFGS  fmax={fmax} ===")
+            opt = timed_stage('LBFGS', fmax,
+                              lambda: ParallelLBFGS(batch, batch_evaluator=evaluator,
+                                  fmax=fmax, max_steps=lbfgs_steps,
+                                  maxstep=MAXSTEP, memory=LBFGS_MEMORY),
+                              lambda optimizer: optimizer.run(out_dir=out_dir))
+            batch = opt.get_atoms()
+        previous = ladder[-1]
 
     print("\n=== final energies ===")
     for i, s in enumerate(opt.states):
@@ -214,7 +319,8 @@ def run_full_optimization(
 
 def compute_zpe(batch, calc):
     print(f"\n=== ParallelVibrations on {len(batch)} structures ===")
-    vib = ParallelVibrations(batch, batch_evaluator=make_evaluator(calc))
+    vib = ParallelVibrations(batch,
+                             batch_evaluator=make_evaluator(final_calculator(calc)))
     vib.run()
     vib.read()
     return vib.get_zero_point_energies()
@@ -268,7 +374,8 @@ def main():
                    help="Cap batch size (default: all CalcFolders)")
     p.add_argument("--model", default="deepmd_d3",
                    choices=sorted(MODELS),
-                   help="DeepMD model key from sirena.yaml deepmd.models_path")
+                   help="DeepMD model key from sirena.yaml deepmd.models_path; "
+                        "ignored when INPUT.txt has a MODELS section")
     p.add_argument("--device", default=None,
                    help="DeepMD device override (default: deepmd.device from config)")
     p.add_argument("--zpe", action="store_true",
@@ -333,7 +440,10 @@ def main():
 
     cfg = load_config()
     device = args.device or cfg["deepmd"].get("device", "cpu")
-    calc = make_calculator(args.model, device)
+    stages = load_model_stages(workdir, args.model)
+    for line in describe_model_stages(stages):
+        print(f"[batch_worker] model {line}")
+    calc = make_calculators(stages, device)
 
     keep_idx = list(range(len(atoms_in)))
     if args.size is not None:

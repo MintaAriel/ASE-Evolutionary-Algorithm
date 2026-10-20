@@ -164,7 +164,17 @@ def _assert_cpu(calc):
     return device
 
 
-def _init_worker(model_key, threads, pin, cpu_queue):
+def assert_cpu_stages(calc):
+    """``_assert_cpu`` for every model of a ``make_calculators`` result."""
+    calcs = [c for _, c in calc] if isinstance(calc, list) else [calc]
+    return [_assert_cpu(c) for c in calcs][-1]
+
+
+def describe_models(model_stages):
+    return ", ".join(model for _, model in model_stages)
+
+
+def _init_worker(model_stages, threads, pin, cpu_queue):
     """Pin this process, then load its own CPU-only DeepMD calculator.
 
     Runs once per worker process.  Affinity, the OpenMP/MKL/DeePMD thread caps
@@ -183,8 +193,8 @@ def _init_worker(model_key, threads, pin, cpu_queue):
 
     # deepmd/torch import happens inside make_calculator, i.e. after the
     # environment above is in place.
-    calc = batch_worker.make_calculator(model_key, "cpu")
-    device = _assert_cpu(calc)
+    calc = batch_worker.make_calculators(model_stages, "cpu")
+    device = assert_cpu_stages(calc)
     try:
         import torch
         # DP() resets the intra-op pool to 1; restore the requested width.
@@ -199,7 +209,8 @@ def _init_worker(model_key, threads, pin, cpu_queue):
     _STATE["cores"] = cores
     _STATE["threads"] = threads
     print(f"[cpu_worker:{os.getpid()}] ready — {message}, "
-          f"{threads} thread(s), model={model_key} on {device or 'cpu'}",
+          f"{threads} thread(s), model={describe_models(model_stages)} "
+          f"on {device or 'cpu'}",
           flush=True)
 
 
@@ -350,7 +361,7 @@ def _report(result, done, total):
           flush=True)
 
 
-def run_pool(workdir, chunks, model_key, threads, pin, profile, want_zpe,
+def run_pool(workdir, chunks, model_stages, threads, pin, profile, want_zpe,
              watch=False, poll=3.0, settle=2.0, max_idle=None,
              stop_file=None, stop_flag=None):
     """Relax pending CalcFolders with one process per CPU chunk.
@@ -382,7 +393,7 @@ def run_pool(workdir, chunks, model_key, threads, pin, profile, want_zpe,
             max_workers=len(chunks),
             mp_context=ctx,
             initializer=_init_worker,
-            initargs=(model_key, threads, pin, cpu_queue),
+            initargs=(model_stages, threads, pin, cpu_queue),
         ) as pool:
             while True:
                 reason = _should_stop()
@@ -498,7 +509,8 @@ def build_parser():
                    help="USPEX working directory (holds Calculation/Calcfold_* "
                         "or legacy CalcFold[N])")
     p.add_argument("--model", default="deepmd_d3", choices=sorted(MODELS),
-                   help="DeepMD model key from the config's deepmd.models_path")
+                   help="DeepMD model key from the config's deepmd.models_path; "
+                        "ignored when INPUT.txt has a MODELS section")
     p.add_argument("--cores", default=None,
                    help="How many cores, or exactly which ones: '8' (a count), "
                         "'0-11' (a range) or '0,2,4-6' (a list). "
@@ -561,11 +573,11 @@ def main(argv=None):
     # surface inside every worker's initializer, breaking the pool and
     # publishing energy-0 fallbacks for the whole wave.
     try:
-        model_path = resolve_model(load_config()["deepmd"]["models_path"],
-                                   args.model)
-    except (KeyError, FileNotFoundError) as exc:
+        model_stages = batch_worker.load_model_stages(workdir, args.model)
+        for line in batch_worker.describe_model_stages(model_stages):
+            print(f"[cpu_worker] model {line}", flush=True)
+    except (KeyError, ValueError, FileNotFoundError) as exc:
         sys.exit(f"[cpu_worker] {exc}")
-    print(f"[cpu_worker] model {args.model}: {model_path}", flush=True)
 
     # ---- CPU inventory ----------------------------------------------------
     try:
@@ -619,7 +631,7 @@ def main(argv=None):
     t0 = time.perf_counter()
     try:
         done, failed = run_pool(
-            workdir, chunks, args.model, args.threads, not args.no_pin,
+            workdir, chunks, model_stages, args.threads, not args.no_pin,
             profile, args.zpe,
             watch=args.watch, poll=args.poll, settle=args.settle,
             max_idle=args.max_idle, stop_file=args.stop_file,

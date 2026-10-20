@@ -13,6 +13,7 @@ MODELS = {
     'deepmd_d3_abs': 'dpa3-d3_abs_torch.pth',
     'deepmd_d3_mbj': 'dpa3-d3-cpu_mbj.pth',
     'deepmd_d3_mbj_abs': 'dpa3-d3-cpu_mbj_abs.pth',
+    'deepmd_bj' : 'dpa3_d3_bj.pth',
 }
 
 

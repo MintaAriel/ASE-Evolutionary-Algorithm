@@ -26,10 +26,15 @@ process per requested GPU.  With ``--worker cpu`` it starts ``worker_cpu.py``
 once, in watch mode, with one process per selected core.  Pick GPU IDs with
 ``--gpu-ids 0,1,2`` or CPU cores with ``--cores``.
 
-The worker needs the DeepMD environment, so it is run in the ``deepmd``
-conda env (``deepmd.conda_env`` in the EA config) via ``conda run`` unless
+The worker needs the DeepMD environment, so it is run via ``conda run`` in
+the conda env named by ``CONDA`` in the workdir's INPUT.txt (e.g.
+``deepmd_dpa4 : CONDA``), else ``deepmd.conda_env`` in the EA config, unless
 ``--worker-python`` / ``$WORKER_PY`` points at an explicit interpreter.
 This driver itself needs no DeepMD dependency.
+
+A ``MODELS`` section in INPUT.txt (``<fmax> : <model file or key>`` lines,
+see ``ea.io.read_input.parse_uspex26_workflow``) makes every worker relax
+with those models in turn, each down to its fmax; ``--model`` is then unused.
 
 Usage::
 
@@ -52,6 +57,8 @@ from pathlib import Path
 # This file lives at src/ea/uspex/uspex26/run_uspex26.py, so parents[3] == src.
 EA_SRC = str(Path(__file__).resolve().parents[3])
 sys.path.insert(0, EA_SRC)
+from ea.io.read_input import parse_uspex26_workflow
+from ea.uspex.models import MODELS
 from ea.utils.config import load_config
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -283,7 +290,8 @@ def main():
     p.add_argument("--workdir", default=os.getcwd(),
                    help="Directory USPEX 26 runs in (default: cwd)")
     p.add_argument("--model", default="deepmd_d3",
-                   help="DeepMD model key (default: deepmd_d3)")
+                   help="DeepMD model key (default: deepmd_d3); unused when "
+                        "INPUT.txt has a MODELS section")
     p.add_argument("--device", default=None,
                    help="DeepMD device for the batched worker: 'cpu' (default) "
                         "or 'cuda' (falls back to config deepmd.device)")
@@ -395,6 +403,22 @@ def main():
 
     validate_molecular_interface(workdir)
 
+    # MODELS / CONDA from INPUT.txt take precedence over --model / the config.
+    input_path = os.path.join(workdir, "INPUT.txt")
+    workflow = {"models": [], "conda": None}
+    if os.path.isfile(input_path):
+        try:
+            workflow = parse_uspex26_workflow(input_path, MODELS)
+        except ValueError as exc:
+            sys.exit(f"[launcher] ERROR: INPUT.txt: {exc}")
+    if workflow["conda"]:
+        cfg["deepmd"] = dict(cfg.get("deepmd") or {},
+                             conda_env=workflow["conda"])
+    for fmax, model in workflow["models"]:
+        if model not in MODELS and not os.path.isfile(os.path.expanduser(model)):
+            sys.exit(f"[launcher] ERROR: INPUT.txt MODELS: model not found: "
+                     f"{model}")
+
     os.chdir(workdir)
 
     # Fresh run: USPEX 26 regenerates these every launch.  Wiping stays the
@@ -454,7 +478,18 @@ def main():
                  else "batched per wave")
     print(f"[launcher] mode    : {mode_name}")
     print(f"[launcher] worker  : {' '.join(worker_cmd)}")
-    print(f"[launcher] starting USPEX 26 (model={args.model}, device={device})", flush=True)
+    if workflow["models"]:
+        for fmax, model in workflow["models"]:
+            print(f"[launcher] model   : fmax {fmax}: {model} (INPUT.txt MODELS)")
+        model_label = "INPUT.txt MODELS"
+    else:
+        model_label = args.model
+    if not args.worker_python:
+        source = "INPUT.txt CONDA" if workflow["conda"] else "config"
+        conda_env = (cfg.get("deepmd") or {}).get("conda_env", "deepmd_env")
+        print(f"[launcher] conda   : {conda_env} "
+              f"({source})")
+    print(f"[launcher] starting USPEX 26 (model={model_label}, device={device})", flush=True)
 
     uspex_log = open(os.path.join(workdir, "uspex_run.log"), "w")
     proc = subprocess.Popen([uspex], cwd=workdir, stdout=uspex_log,

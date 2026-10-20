@@ -38,7 +38,7 @@ mattersim:
 
 deepmd:
   conda_env: deepmd_env
-  models_path: /home/sirena/Brian/container_gpu/models
+  models_path: /home/sirena/Brian/Github/ASE-Evolutionary-Algorithm/models
   device: cpu
   model_key: base_deepmd
 

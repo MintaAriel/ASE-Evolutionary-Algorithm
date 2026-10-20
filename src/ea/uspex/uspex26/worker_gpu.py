@@ -7,7 +7,7 @@ the shared process pool.  Keeping one model loaded per GPU avoids the
 single-device batch barrier in ``worker.py`` while still allowing USPEX to
 create new relaxation folders continuously.
 
-GPU IDs are host-visible CUDA IDs.  A worker masks itself with
+GPU IDs are the nvidia-smi / nvtop IDs (PCI bus order).  A worker masks itself with
 ``CUDA_VISIBLE_DEVICES=<id>`` before importing DeepMD, so the selected host
 GPU appears as device 0 inside that worker.  Example::
 
@@ -60,9 +60,8 @@ def _early_threads(argv):
 cpu_layout.set_thread_env(_early_threads(sys.argv))
 cpu_layout.set_memory_env()
 
-from ea.uspex.models import MODELS, resolve_model
+from ea.uspex.models import MODELS
 from ea.uspex.uspex26 import worker as batch_worker
-from ea.utils.config import load_config
 
 
 _GPU_LEASE_TIMEOUT = 30
@@ -125,7 +124,7 @@ def _model_device(calc):
     return None
 
 
-def _init_worker(model_key, threads, gpu_queue):
+def _init_worker(model_stages, threads, gpu_queue):
     """Assign one GPU and load its calculator exactly once in this process."""
     try:
         gpu_id = int(gpu_queue.get(timeout=_GPU_LEASE_TIMEOUT))
@@ -135,16 +134,23 @@ def _init_worker(model_key, threads, gpu_queue):
     # This must precede the first import of torch/deepmd.  Because this module
     # only imports the ASE-facing worker above, the CUDA-dependent import still
     # happens here for the first time in make_calculator().
+    # CUDA numbers devices fastest-first by default, which on mixed nodes is
+    # not the nvidia-smi/nvtop numbering users pick IDs from; pin PCI order.
+    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
     os.environ["DEVICE"] = "gpu"
     cpu_layout.set_thread_env(threads)
 
-    calc = batch_worker.make_calculator(model_key, "gpu")
-    device = _model_device(calc)
-    if device is not None and getattr(device, "type", None) != "cuda":
-        raise RuntimeError(
-            f"DeepMD model for host GPU {gpu_id} landed on {device}, not CUDA"
-        )
+    calc = batch_worker.make_calculators(model_stages, "gpu")
+    calcs = [c for _, c in calc] if isinstance(calc, list) else [calc]
+    for stage_calc in calcs:
+        device = _model_device(stage_calc)
+        if device is not None and getattr(device, "type", None) != "cuda":
+            raise RuntimeError(
+                f"DeepMD model for host GPU {gpu_id} landed on {device}, "
+                "not CUDA"
+            )
+    models = ", ".join(model for _, model in model_stages)
 
     try:
         import torch
@@ -159,7 +165,7 @@ def _init_worker(model_key, threads, gpu_queue):
     print(
         f"[gpu_worker:{os.getpid()}] ready — host GPU {gpu_id} "
         f"(visible as CUDA:0), {threads} thread(s), "
-        f"model={model_key} on {device or 'cuda'}",
+        f"model={models} on {device or 'cuda'}",
         flush=True,
     )
 
@@ -307,7 +313,7 @@ def _report(result, done, total):
     )
 
 
-def run_pool(workdir, gpu_ids, model_key, threads, profile, want_zpe,
+def run_pool(workdir, gpu_ids, model_stages, threads, profile, want_zpe,
              watch=False, poll=3.0, settle=2.0, max_idle=None,
              stop_file=None, stop_flag=None):
     """Relax pending CalcFolders with one persistent process per GPU."""
@@ -334,7 +340,7 @@ def run_pool(workdir, gpu_ids, model_key, threads, profile, want_zpe,
             max_workers=len(gpu_ids),
             mp_context=ctx,
             initializer=_init_worker,
-            initargs=(model_key, threads, gpu_queue),
+            initargs=(model_stages, threads, gpu_queue),
         ) as pool:
             while True:
                 reason = should_stop()
@@ -444,7 +450,8 @@ def build_parser():
     p.add_argument("--gpu-ids", "--gpus", default="0",
                    help="Host GPU IDs, e.g. '0,1,2' or '0-2' (default: 0)")
     p.add_argument("--model", default="deepmd_d3", choices=sorted(MODELS),
-                   help="DeepMD model key from the config")
+                   help="DeepMD model key from the config; ignored when "
+                        "INPUT.txt has a MODELS section")
     p.add_argument("--threads", type=int, default=2,
                    help="CPU threads per GPU worker (default: 2)")
     p.add_argument("--zpe", action="store_true",
@@ -494,11 +501,11 @@ def main(argv=None):
         sys.exit(f"[gpu_worker] workdir not found: {workdir}")
 
     try:
-        model_path = resolve_model(load_config()["deepmd"]["models_path"],
-                                   args.model)
-    except (KeyError, FileNotFoundError) as exc:
+        model_stages = batch_worker.load_model_stages(workdir, args.model)
+        for line in batch_worker.describe_model_stages(model_stages):
+            print(f"[gpu_worker] model {line}", flush=True)
+    except (KeyError, ValueError, FileNotFoundError) as exc:
         sys.exit(f"[gpu_worker] {exc}")
-    print(f"[gpu_worker] model {args.model}: {model_path}", flush=True)
     print(f"[gpu_worker] host GPUs: {gpu_ids}", flush=True)
 
     if list(workdir.glob("MOL_*")):
@@ -531,7 +538,7 @@ def main(argv=None):
     t0 = time.perf_counter()
     try:
         done, failed = run_pool(
-            workdir, gpu_ids, args.model, args.threads, profile, args.zpe,
+            workdir, gpu_ids, model_stages, args.threads, profile, args.zpe,
             watch=args.watch, poll=args.poll, settle=args.settle,
             max_idle=args.max_idle, stop_file=args.stop_file,
             stop_flag=stop_flag,
