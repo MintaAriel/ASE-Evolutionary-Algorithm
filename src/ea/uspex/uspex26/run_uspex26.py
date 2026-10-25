@@ -34,7 +34,10 @@ This driver itself needs no DeepMD dependency.
 
 A ``MODELS`` section in INPUT.txt (``<fmax> : <model file or key>`` lines,
 see ``ea.io.read_input.parse_uspex26_workflow``) makes every worker relax
-with those models in turn, each down to its fmax; ``--model`` is then unused.
+with those models in turn, switching when measured fmax falls below the
+current model's threshold; ``--model`` is then unused. Optional STAGES lines
+(``<fmax> : <FIRE|LBFGS> : <max steps>``) set the optimization recipe; when
+absent, workers use their built-in FIRE/LBFGS defaults.
 
 Usage::
 

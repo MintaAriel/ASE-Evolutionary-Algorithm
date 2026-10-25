@@ -521,10 +521,8 @@ def main(argv=None):
             )
 
     cpu_layout.set_thread_env(args.threads)
-    profile = {}
+    profile = batch_worker.load_optimization_profile(workdir, smoke=args.smoke)
     if args.smoke:
-        profile = {"fire_steps": 2, "lbfgs_steps": 2,
-                   "lbfgs_stages": (0.03,)}
         print("[gpu_worker] SMOKE profile: abbreviated relaxation", flush=True)
 
     stop_flag = _install_signal_handlers()

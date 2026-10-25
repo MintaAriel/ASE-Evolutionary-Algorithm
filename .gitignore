@@ -11,6 +11,7 @@ tests/
 !tests/
 tests/*
 !tests/test_uspex26_code20.py
+!tests/test_uspex26_stages.py
 models/
 MOLCRYS/
 

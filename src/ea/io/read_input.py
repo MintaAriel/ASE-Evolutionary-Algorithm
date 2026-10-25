@@ -13,6 +13,7 @@ USPEX 26 DeepMD workers accept in a USPEX ``INPUT.txt``.
 
 import os
 import re
+import math
 
 
 def parse_value(val_str):
@@ -168,7 +169,7 @@ def _parse_model_entry(line, model_keys):
 def parse_uspex26_workflow(filepath, model_keys=()):
     """Read the DeepMD worker settings from a USPEX 26 ``INPUT.txt``.
 
-    Two optional settings are recognised:
+    Three optional settings are recognised:
 
     MODELS -- staged relaxation, one model per stage, written either under a
     ``*  MODELS  *`` section header or as a ``% MODELS ... % EndMODELS`` block::
@@ -179,15 +180,21 @@ def parse_uspex26_workflow(filepath, model_keys=()):
         0.2:   /path/to/fast_compressed_model.pt2
         0.001: /path/to/accurate_model.pt2
 
-    Each line is ``<target fmax> : <model>``; a structure is relaxed with the
-    first model down to its fmax, then with the next one, and so on.  The
+    Each line is ``<switch fmax> : <model>``; a structure switches to the next
+    model when its measured fmax is below the current model's threshold. The
+    final model stays active through the remaining optimization stages. The
     model is a file path or a key of ``ea.uspex.models.MODELS``.
+
+    STAGES -- optional ``<fmax> : <FIRE|LBFGS> : <max steps>`` lines under a
+    ``* STAGES *`` header or in a ``% STAGES ... % EndSTAGES`` block. Stage
+    order and step limits are preserved; omission uses worker defaults.
 
     CONDA -- conda environment that runs the workers, as ``<env> : CONDA``
     or a ``% CONDA ... % EndCONDA`` block.
 
-    Returns ``{'models': [(fmax, model), ...], 'conda': env}``; ``models`` is
-    an empty list and ``conda`` None when the INPUT does not set them.
+    Returns ``{'models': [(fmax, model), ...], 'stages':
+    [(fmax, optimizer, max_steps), ...], 'conda': env}``. Missing model/stage
+    lists are empty; missing CONDA is None.
     """
     if not os.path.isfile(filepath):
         raise FileNotFoundError(f"Input file not found: {filepath}")
@@ -222,13 +229,45 @@ def parse_uspex26_workflow(filepath, model_keys=()):
             models.append(entry)
 
     for fmax, model in models:
-        if fmax <= 0:
+        if not math.isfinite(fmax) or fmax <= 0:
             raise ValueError(f"MODELS fmax must be positive: {fmax} : {model}")
     targets = [fmax for fmax, _ in models]
     if any(b >= a for a, b in zip(targets, targets[1:])):
         raise ValueError(
             "MODELS must be listed from the loosest to the tightest fmax "
             f"(strictly decreasing), got {targets}")
+
+    stages = []
+    block = _block_values(lines, 'STAGES')
+    if block is None:
+        block = []
+        in_section = False
+        for line in lines:
+            if _is_header(line):
+                name = _header_name(line)
+                if name:
+                    in_section = name.upper() == 'STAGES'
+                continue
+            if not in_section or not line:
+                continue
+            # The next ordinary USPEX parameter ends the section.
+            if line.startswith('%') or (line.count(':') == 1 and
+                    line.split(':', 1)[1].strip().upper() not in ('FIRE', 'LBFGS')):
+                break
+            block.append(line)
+    for line in block:
+        parts = [part.strip() for part in line.split(':')]
+        try:
+            fmax, optimizer, steps = parts
+            fmax, optimizer, steps = float(fmax), optimizer.upper(), int(steps)
+        except ValueError as exc:
+            raise ValueError(f"bad STAGES line {line!r}; expected "
+                             "'<fmax> : <FIRE|LBFGS> : <positive max steps>'") from exc
+        if not math.isfinite(fmax) or fmax <= 0 or steps <= 0:
+            raise ValueError(f"STAGES fmax and max steps must be positive: {line!r}")
+        if optimizer not in ('FIRE', 'LBFGS'):
+            raise ValueError(f"unsupported STAGES optimizer {optimizer!r}; use FIRE or LBFGS")
+        stages.append((fmax, optimizer, steps))
 
     conda = None
     block = _block_values(lines, 'CONDA')
@@ -242,4 +281,4 @@ def parse_uspex26_workflow(filepath, model_keys=()):
                     conda = value
                     break
 
-    return {'models': models, 'conda': conda}
+    return {'models': models, 'stages': stages, 'conda': conda}

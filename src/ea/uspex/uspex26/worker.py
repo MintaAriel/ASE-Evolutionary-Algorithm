@@ -34,6 +34,8 @@ import time
 import traceback
 from pathlib import Path
 
+import numpy as np
+from ase.calculators.singlepoint import SinglePointCalculator
 from ase.io import read, write
 
 from ea.parallel.create_batch import batch_calculator_deepmd
@@ -83,10 +85,8 @@ def make_calculator(model, device):
 def load_model_stages(workdir, model_key):
     """``[(fmax, model), ...]`` to relax with, picklable for worker pools.
 
-    When the workdir's ``INPUT.txt`` has a MODELS section each structure is
-    relaxed with its models in turn, each down to its own fmax.  Otherwise the
-    single *model_key* (``--model``) runs the default ``LBFGS_STAGES`` ladder,
-    marked by an fmax of None.
+    MODELS thresholds control switching between models independently of the
+    optimization recipe. Without MODELS, use *model_key* throughout.
     """
     input_path = Path(workdir) / "INPUT.txt"
     if input_path.is_file():
@@ -94,6 +94,21 @@ def load_model_stages(workdir, model_key):
         if models:
             return [(float(fmax), str(model)) for fmax, model in models]
     return [(None, model_key)]
+
+
+def load_optimization_profile(workdir, smoke=False):
+    """Picklable optimizer settings shared by batch, CPU and GPU workers."""
+    input_path = Path(workdir) / 'INPUT.txt'
+    stages = (parse_uspex26_workflow(input_path, MODELS)['stages']
+              if input_path.is_file() else [])
+    if smoke:
+        # An explicit diagnostic override, even when INPUT has STAGES.
+        stages = [(FIRE_FMAX, 'FIRE', 2), (0.03, 'LBFGS', 2)]
+    if stages:
+        for fmax, optimizer, steps in stages:
+            print(f'[optimization] {optimizer} fmax={fmax} max_steps={steps}')
+        return {'optimization_stages': stages}
+    return {}
 
 
 def describe_model_stages(stages):
@@ -115,7 +130,7 @@ def make_calculators(stages, device):
 
 
 def final_calculator(calc):
-    """The calculator that produced the final energies (used for ZPE)."""
+    """The most accurate configured calculator (used for ZPE)."""
     return calc[-1][1] if isinstance(calc, list) else calc
 
 
@@ -123,6 +138,70 @@ def make_evaluator(calculator):
     def _eval(atoms_list):
         return batch_calculator_deepmd(atoms_list, calculator)
     return _eval
+
+
+class ModelSwitchingEvaluator:
+    """Switch each structure independently, retaining its model across stages.
+
+    Bind the current optimizer states because optimizers copy Atoms and
+    evaluate only their active subset. Use the optimizer's cell filter for
+    exactly the same fmax (atomic and cell forces) as its convergence test.
+    """
+
+    def __init__(self, models, size):
+        self.models = models
+        self.indices = [0] * size
+
+    def bind(self, states):
+        self.states = {id(state.atoms): (i, state)
+                       for i, state in enumerate(states)}
+
+    @staticmethod
+    def _reset_history(state):
+        # A new potential has a different force/energy surface. Keep the
+        # geometry, cell reference and step budget, but discard old history.
+        if hasattr(state, 'rho'):
+            state.s.clear()
+            state.y.clear()
+            state.rho.clear()
+            state.iteration = 0
+            state.r0 = state.f0 = None
+        else:
+            state.vel = None
+            state.Nsteps = 0
+            state.a = state.astart
+
+    def __call__(self, atoms_list):
+        energies = np.empty(len(atoms_list))
+        forces, stresses = [None] * len(atoms_list), [None] * len(atoms_list)
+        pending = list(range(len(atoms_list)))
+        while pending:
+            groups = {}
+            for j in pending:
+                i, _ = self.states[id(atoms_list[j])]
+                groups.setdefault(self.indices[i], []).append(j)
+            pending = []
+            for model_index, members in groups.items():
+                threshold, calculator = self.models[model_index]
+                e, f, s = batch_calculator_deepmd(
+                    [atoms_list[j] for j in members], calculator)
+                for k, j in enumerate(members):
+                    i, state = self.states[id(atoms_list[j])]
+                    energies[j], forces[j], stresses[j] = e[k], f[k], s[k]
+                    if model_index == len(self.models) - 1:
+                        continue
+                    state.atoms.calc = SinglePointCalculator(
+                        state.atoms, energy=float(e[k]), forces=f[k], stress=s[k])
+                    fmax = float(np.linalg.norm(state.filter.get_forces(), axis=1).max())
+                    if fmax < threshold:
+                        self.indices[i] += 1
+                        self._reset_history(state)
+                        print(f'[model_switch] structure {i}: model {model_index + 1}'
+                              f' -> {model_index + 2}, fmax={fmax:.6g} < {threshold}')
+                        # Re-evaluate at the same geometry before the optimizer
+                        # can accept convergence or move using the new model.
+                        pending.append(j)
+        return energies, forces, stresses
 
 
 # ---------------------------------------------------------------------------
@@ -237,16 +316,21 @@ def run_full_optimization(
     fire_steps=FIRE_STEPS,
     lbfgs_steps=LBFGS_STEPS,
     lbfgs_stages=LBFGS_STAGES,
+    optimization_stages=None,
     timing_path=None,
 ):
-    """FIRE then a ladder of LBFGS stages.
+    """Run the configured recipe with independent force-based model switches.
 
-    *calc* is one calculator, or a list of ``(fmax, calculator)`` model stages
-    from ``make_calculators``.  Each model stage continues from the previous
-    one with the *lbfgs_stages* thresholds between its predecessor's fmax and
-    its own, then LBFGS to its own fmax.
+    STAGES supplies (fmax, optimizer, max_steps) rows. Omission preserves the
+    worker's FIRE/LBFGS defaults. Model switches never add optimizer stages
+    or reset their step limits.
     """
-    model_stages = calc if isinstance(calc, list) else [(None, calc)]
+    stages = optimization_stages or [
+        (FIRE_FMAX, 'FIRE', fire_steps),
+        *((fmax, 'LBFGS', lbfgs_steps) for fmax in lbfgs_stages),
+    ]
+    switching = ModelSwitchingEvaluator(calc, len(batch)) if isinstance(calc, list) else None
+    evaluator = switching if switching is not None else make_evaluator(calc)
 
     def timed_stage(kind, threshold, create, run):
         # Opt-in instrumentation; ordinary production runs take the same path
@@ -257,6 +341,8 @@ def run_full_optimization(
                 torch.cuda.synchronize()
             started = time.perf_counter()
         optimizer = create()
+        if switching is not None:
+            switching.bind(optimizer.states)
         run(optimizer)
         if timing_path is not None:
             if torch.cuda.is_available():
@@ -272,36 +358,34 @@ def run_full_optimization(
             print('[stage_timing] ' + json.dumps(row), flush=True)
         return optimizer
 
-    previous = float("inf")
-    for n, (target, stage_calc) in enumerate(model_stages):
-        evaluator = make_evaluator(stage_calc)
-        if target is None:
-            ladder = list(lbfgs_stages)
-        else:
-            ladder = [f for f in lbfgs_stages if previous > f > target] + [target]
-            print(f"\n=== model stage {n + 1}/{len(model_stages)}  "
-                  f"target fmax={target} ===")
-
-        if n == 0:
-            fire_fmax = FIRE_FMAX if target is None else max(FIRE_FMAX, target)
-            print(f"\n=== ParallelFIRE  fmax={fire_fmax}  "
-                  f"on {len(batch)} structures ===")
-            opt = timed_stage('FIRE', fire_fmax,
+    for fmax, kind, max_steps in stages:
+        print(f"\n=== Parallel{kind} fmax={fmax} max_steps={max_steps} "
+              f"on {len(batch)} structures ===")
+        if kind == 'FIRE':
+            opt = timed_stage(kind, fmax,
                               lambda: ParallelFIRE(batch, batch_evaluator=evaluator,
-                                  fmax=fire_fmax, max_steps=fire_steps,
+                                  fmax=fmax, max_steps=max_steps,
                                   maxstep=MAXSTEP),
                               lambda optimizer: optimizer.run())
-            batch = opt.get_atoms()
-
-        for fmax in ladder:
-            print(f"\n=== ParallelLBFGS  fmax={fmax} ===")
-            opt = timed_stage('LBFGS', fmax,
+        elif kind == 'LBFGS':
+            opt = timed_stage(kind, fmax,
                               lambda: ParallelLBFGS(batch, batch_evaluator=evaluator,
-                                  fmax=fmax, max_steps=lbfgs_steps,
+                                  fmax=fmax, max_steps=max_steps,
                                   maxstep=MAXSTEP, memory=LBFGS_MEMORY),
                               lambda optimizer: optimizer.run(out_dir=out_dir))
-            batch = opt.get_atoms()
-        previous = ladder[-1]
+        else:
+            raise ValueError(f'unsupported optimization stage: {kind!r}')
+        batch = opt.get_atoms()
+
+    # At the step limit the optimizer may have moved after its last energy
+    # evaluation. Publish energy/forces for the actual returned geometry.
+    energies, forces, stresses = evaluator(batch)
+    for i, state in enumerate(opt.states):
+        state.atoms.calc = SinglePointCalculator(
+            state.atoms, energy=float(energies[i]), forces=forces[i], stress=stresses[i])
+        state.energy = float(energies[i])
+        state.fmax_current = float(np.linalg.norm(state.filter.get_forces(), axis=1).max())
+        state.converged = state.fmax_current < stages[-1][0]
 
     print("\n=== final energies ===")
     for i, s in enumerate(opt.states):
@@ -450,13 +534,8 @@ def main():
         keep_idx = keep_idx[: args.size]
     batch = [atoms_in[i].copy() for i in keep_idx]
 
-    optimization_kwargs = {}
+    optimization_kwargs = load_optimization_profile(workdir, smoke=args.smoke)
     if args.smoke:
-        optimization_kwargs = {
-            "fire_steps": 2,
-            "lbfgs_steps": 2,
-            "lbfgs_stages": (0.03,),
-        }
         print("[batch_worker] SMOKE profile: abbreviated relaxation")
     relaxed, energies = run_full_optimization(
         batch, calc, out_dir, **optimization_kwargs

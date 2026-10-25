@@ -812,9 +812,8 @@ def main(argv=None):
     cpu_layout.set_thread_env(args.threads)
     worker_cpu.force_cpu_only()
 
-    profile = {}
+    profile = batch_worker.load_optimization_profile(workdir, smoke=args.smoke)
     if args.smoke:
-        profile = {"fire_steps": 2, "lbfgs_steps": 2, "lbfgs_stages": (0.03,)}
         print("[cpu_dyn] SMOKE profile: abbreviated relaxation", flush=True)
 
     # ---- molecular interface guard (same rule as worker.py) --------------

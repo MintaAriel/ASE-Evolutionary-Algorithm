@@ -61,6 +61,44 @@ python .../uspex26/run_uspex26.py --workdir /path/to/your/uspex_run --device cud
 - `--smoke` abbreviates the optimizer to two FIRE and two LBFGS steps for an
   integration check. It is not a production relaxation setting.
 
+### Optimization stages and model switching
+
+Optional `STAGES` settings in `INPUT.txt` apply to the batch, CPU, dynamic
+CPU, and GPU workers. Each row is `fmax : optimizer : maximum steps`:
+
+```text
+* STAGES *
+0.1   : FIRE  : 500
+0.03  : LBFGS : 1200
+0.01  : LBFGS : 1200
+0.005 : LBFGS : 1200
+0.002 : LBFGS : 1200
+0.001 : LBFGS : 1200
+```
+
+Stages run in the listed order and may finish early on convergence. If
+`STAGES` is omitted, the worker uses the default recipe shown above.
+`% STAGES ... % EndSTAGES` blocks are also accepted. `--smoke` explicitly
+overrides this recipe with two FIRE and two LBFGS steps.
+
+`MODELS` independently selects the potentials used during those stages:
+
+```text
+* MODELS *
+0.2   : /path/to/fast_model.pt2
+0.001 : /path/to/accurate_model.pt2
+```
+
+Each structure starts on the first model and switches permanently to the
+next when its measured fmax is strictly below the current model's threshold.
+The fmax includes atomic and cell forces from `FrechetCellFilter`, matching
+the optimizers' convergence test. Switching re-evaluates the same geometry
+with the next model and clears optimizer history without resetting the
+stage's step limit. Structures in a batch switch independently. The last
+model remains active; its threshold does not add an optimization stage or
+replace the final `STAGES` target. Without `MODELS`, `--model` is used for
+every optimization stage. Optional ZPE uses the last configured model.
+
 ### GPU (`--worker batch`, default) vs CPU (`--worker cpu`)
 
 `worker.py` is built for a GPU: one process evaluates the whole wave in a
