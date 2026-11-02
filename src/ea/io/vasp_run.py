@@ -16,24 +16,31 @@ PHYSICAL_CORES = ms['cores']
 NUMBERING = ms['cpu_numbering']
 N = 2 * PHYSICAL_CORES  # total threads
 
-def sort_poscar(atoms):
+def potcar_datasets(path):
+    """Read complete PAW datasets in source order."""
+    import re
+    datasets = {}
+    for block in re.findall(rb'.*?End of Dataset[^\n]*\n', Path(path).read_bytes(), flags=re.S):
+        match = re.search(rb'TITEL\s*=\s*\S+\s+([A-Z][a-z]?)(?:_[^\s]+)?\s', block)
+        if match is None:
+            raise ValueError(f"Cannot identify POTCAR dataset in {path}")
+        symbol = match.group(1).decode()
+        if symbol in datasets:
+            raise ValueError(f"Multiple potentials for {symbol} in {path}")
+        datasets[symbol] = block
+    if not datasets:
+        raise ValueError(f"No complete POTCAR datasets in {path}")
+    return datasets
 
-    # desired order (must match POTCAR!)
-    order = ['C', 'O', 'N', 'H']
 
-    # check for unknown elements
-    symbols = set(atoms.get_chemical_symbols())
-    unknown = symbols - set(order)
-    if unknown:
-        raise ValueError(f"Found elements not in order list: {unknown}")
-
-    # reorder atoms
-    atoms_sorted = atoms[[i for i, a in sorted(
-        enumerate(atoms),
-        key=lambda x: order.index(x[1].symbol)
-    )]]
-
-    return atoms_sorted
+def sort_poscar(atoms, order=None):
+    """Group species in potential order or first-occurrence order."""
+    symbols = list(dict.fromkeys(atoms.get_chemical_symbols()))
+    order = symbols if order is None else list(order)
+    missing = set(symbols) - set(order)
+    if missing:
+        raise ValueError(f"Missing potentials for elements: {sorted(missing)}")
+    return atoms[sorted(range(len(atoms)), key=lambda i: order.index(atoms[i].symbol))]
 
 
 def create_kpoints(cwd, args=None):
@@ -43,7 +50,7 @@ def create_kpoints(cwd, args=None):
         args = args.split()
     subprocess.run([KPGEN, *args], cwd=str(cwd), check=True)
 
-def create_vasp_sp(input_dir, out_dir, traj):
+def create_vasp_sp(input_dir, out_dir, traj, kpoints_args=None):
     files = os.listdir(input_dir)
     if 'INCAR' not in files:
         raise FileNotFoundError(f'No INCAR file to copy in {input_dir}')
@@ -56,10 +63,13 @@ def create_vasp_sp(input_dir, out_dir, traj):
         calc_fold_path = Path(out_dir) / f'vasp_{i}'
         calc_fold_path.mkdir(parents=True, exist_ok=True)
         shutil.copy(Path(input_dir) / 'INCAR', calc_fold_path)
-        shutil.copy(Path(input_dir) / 'POTCAR', calc_fold_path)
-        atoms = sort_poscar(traj[i])
+        datasets = potcar_datasets(Path(input_dir) / 'POTCAR')
+        atoms = sort_poscar(traj[i], datasets)
+        present = set(atoms.get_chemical_symbols())
+        (calc_fold_path / 'POTCAR').write_bytes(
+            b''.join(block for symbol, block in datasets.items() if symbol in present))
         write(calc_fold_path / 'POSCAR', atoms, format='vasp')
-        create_kpoints(calc_fold_path, ["-g", "auto", "-d", "25"])
+        create_kpoints(calc_fold_path, kpoints_args)
 
 def cpu_affinity():
     if NUMBERING == 'adjacent':
@@ -135,6 +145,8 @@ def run_vasp(job_id, thread_list, cwd, mode):
         text=True
     )
 
+    if result.returncode:
+        raise RuntimeError(f"VASP job {job_id} failed ({result.returncode}): {result.stderr}\n{result.stdout}")
     return job_id, result.stdout, result.stderr
 
 

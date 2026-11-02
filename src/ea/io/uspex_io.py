@@ -1,5 +1,6 @@
 import pandas as pd
-from ase.io import read
+from ase.io import read, write
+from pathlib import Path
 import os
 from io import StringIO
 import numpy as np
@@ -180,17 +181,35 @@ def poscar_to_atoms(poscar_str):
     return read(StringIO(poscar_str), format='vasp')
 
 
-def join_poscar(self):
-    path = '/home/vito/PythonProjects/ASEProject/EA/new_minimum/ALL_BEST'
-    seeds_dir = os.listdir(path)
-    all_seeds = None
-    for dir in seeds_dir:
-        seeds_dir = os.path.join(path, dir)
-        best = read(seeds_dir, format="vasp")
-        all_seeds += best
+def join_poscar(structures, out_path='gatheredPOSCARS', start_id=1):
+    """Write Atoms objects as consecutive classic USPEX POSCAR blocks.
 
-    with open("ALL_BEST.vasp", "w") as f:
-        f.write(all_seeds)
+    Each block has a unique EA identifier, optional energy and source index,
+    and species-grouped VASP5 direct coordinates. Returns the block count.
+    Read the result with ``get_structure_from_id(..., all=True)``.
+    """
+    if start_id < 1:
+        raise ValueError('start_id must be positive')
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    written = 0
+    with out_path.open('w') as output:
+        for identifier, atoms in enumerate(structures, start=start_id):
+            buffer = StringIO()
+            write(buffer, atoms, format='vasp', direct=True, sort=True, vasp5=True)
+            lines = buffer.getvalue().splitlines()
+            header = f'EA{identifier} {atoms.get_chemical_formula()}'
+            results = atoms.calc.results if atoms.calc is not None else {}
+            if 'energy' in results:
+                header += f' energy={float(results["energy"]):.12g}'
+            if 'source_index' in atoms.info:
+                header += f' source_index={atoms.info["source_index"]}'
+            if 'source_trajectory' in atoms.info:
+                header += f' source_trajectory={Path(atoms.info["source_trajectory"]).name}'
+            lines[0] = header
+            output.write('\n'.join(lines) + '\n')
+            written += 1
+    return written
 
 
 class parse_tests():
