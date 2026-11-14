@@ -8,6 +8,7 @@ paths:
 
 executables:
   gulp_dir: ~/Programs/gulp-6.4/Src/gulp
+  gulp_lib: ~/Programs/gulp-6.4/Libraries
 
 simulation:
   engine: mattersim

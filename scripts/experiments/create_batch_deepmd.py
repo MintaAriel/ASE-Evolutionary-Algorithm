@@ -37,8 +37,14 @@ def resolve_model(models_dir: Path, key: str) -> tuple[Path, str]:
         raise FileNotFoundError(f"Model not found: {path}")
     return path, key
 
-def create_calc(model_name:str = 'deepmd_d3'):
-    path,_ = resolve_model(cfg['deepmd']['models_path'], model_name)
+def create_calc(model_name:str = 'deepmd_d3', model_path=None):
+    if model_path is not None:
+        path = Path(model_path).expanduser().resolve()
+        if not path.is_file():
+            raise FileNotFoundError(f"Model not found: {path}")
+    else:
+        path,_ = resolve_model(cfg['deepmd']['models_path'], model_name)
+    print(f"DeePMD model: {path}")
     calculator = DP(model=path, device='gpu')
     return calculator
 
@@ -248,6 +254,12 @@ if __name__ == "__main__":
         help=f"Model key from MODELS dict. One of: {', '.join(MODELS)}.",
     )
     parser.add_argument(
+        "--model-path",
+        type=Path,
+        default=None,
+        help="Path to a DeePMD model file (e.g. a fine-tuned frozen_model.pth); overrides --model.",
+    )
+    parser.add_argument(
         "--skip-optimization",
         action="store_true",
         help="Stop after point_calculation + clean_batch; skip run_full_optimization.",
@@ -274,7 +286,7 @@ if __name__ == "__main__":
         batch = [batch]
     print(f"Loaded {len(batch)} structures")
 
-    calc = create_calc(args.model)
+    calc = create_calc(args.model, args.model_path)
 
     indices_to_drop = point_calculation(
         batch, calc,

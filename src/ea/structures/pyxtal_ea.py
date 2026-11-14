@@ -91,6 +91,67 @@ def sym_molcrys_unique( molecule, n, spacegroup):
             # print("Failed to generate a valid crystal structure.")
             continue
 
+def compatible_groups(counts, groups=range(1, 231)):
+    """Space groups whose general Wyckoff multiplicity divides every count.
+
+    For molecules without point symmetry (C1, e.g. ibuprofen) only general positions are
+    available, so each species count must be a multiple of the general multiplicity.
+    """
+    from pyxtal.symmetry import Group
+    return [g for g in groups
+            if all(n % Group(g)[0].multiplicity == 0 for n in counts)]
+
+
+def sym_molcrys_multi(molecules, counts, groups=None, factor=1.1, tm=None, max_attempts=1000):
+    """Random molecular crystal from several different molecules (e.g. an R and an S enantiomer).
+
+    molecules : list of ase.Atoms, one per species (e.g. [mol_R, mol_S])
+    counts    : molecules of each species per cell (e.g. [2, 2] for Z = 4)
+    groups    : candidate space groups; default = all groups compatible with ``counts``.
+    tm        : pyxtal Tol_matrix for intermolecular overlap; None = pyxtal default
+                ('molecular', allows H...H down to 0.74 A). Tol_matrix(prototype='vdW',
+                factor=0.7) gives H...H >= ~1.7 A.
+
+    Atoms are returned species by species, molecule by molecule (resort=False), each
+    molecule keeping the atom order of its input. ``tags`` index the molecules, and
+    ``info`` holds 'spacegroup' and 'species_counts'.
+
+    Note: a group with improper operations (inversion, mirror, glide) turns copies into
+    their mirror image, so there an "R" input also yields S molecules. Use Sohncke groups
+    (``pyxtal.symmetry.Group(g).chiral``) to keep each species' handedness.
+    """
+    if groups is None:
+        groups = compatible_groups(counts)
+    if not groups:
+        raise ValueError(f'No space group is compatible with counts {counts}')
+    species = [ase_to_pymatgen(m) for m in molecules]
+
+    tags = []
+    for m, n in zip(molecules, counts):
+        for _ in range(n):
+            tags += [len(set(tags))] * len(m)
+
+    for _ in range(max_attempts):
+        sym_group = random.choice(groups)
+        try:
+            xtal = pyxtal(molecular=True)
+            kw = {'tm': tm} if tm is not None else {}
+            xtal.from_random(dim=3, group=sym_group, species=species,
+                             numIons=list(counts), factor=factor, **kw)
+        except Exception:
+            continue
+        if not xtal.valid:
+            continue
+
+        atoms = xtal.to_ase(resort=False)
+        atoms.set_tags(tags)
+        atoms.info['spacegroup'] = sym_group
+        atoms.info['species_counts'] = list(counts)
+        return atoms
+
+    raise RuntimeError(f'No valid crystal after {max_attempts} attempts (groups {groups})')
+
+
 class pyxtal_to_poscar():
 
     def __init__(self, blocks, amount, directory):

@@ -33,7 +33,7 @@ class mutate_reaxff():
 
 
 
-    def mutate(self, n_structures, poscar_name='POSCARS_1'):
+    def mutate(self, n_structures, poscar_name='POSCARS_1', keep_traj=False):
         traj_dir = os.path.join(self.work_dir, self.traj_name)
         trajectory = Trajectory(traj_dir, 'w')
         for i in range(2,int(2+n_structures)):
@@ -56,8 +56,9 @@ class mutate_reaxff():
         seeds.poscar_name = poscar_name
         seeds.create(n_structures)
 
-        os.remove(traj_dir)
-        shutil.rmtree(os.path.join(self.work_dir, 'CalcFold'))
+        if not keep_traj:
+            os.remove(traj_dir)
+        shutil.rmtree(os.path.join(self.work_dir, 'CalcFold'), ignore_errors=True)
 
 class mutate_reaxff_small():
     def __init__(self, work_dir, connection_dir):
@@ -97,7 +98,7 @@ class mutate_reaxff_small():
             pass
         else:
             os.remove(traj_dir)
-        shutil.rmtree(os.path.join(self.work_dir, 'CalcFold'))
+        shutil.rmtree(os.path.join(self.work_dir, 'CalcFold'), ignore_errors=True)
 
 class mutate_reaxff_small2():
     def __init__(self, work_dir, connection_dir):
@@ -113,7 +114,6 @@ class mutate_reaxff_small2():
 
         for i in range(2, int(2 + n_structures)):
             atom = self.da.get_atoms(i)
-            sg = self.da.c.get(i).spacegroup
 
             try:
                 optimizer = fix_mol_gradient.GradientDescentGULP(
@@ -121,7 +121,6 @@ class mutate_reaxff_small2():
                     work_dir=self.work_dir,
                     connections=self.connection_dir,
                     library='reaxff',
-                    spacegroup=sg,
                 )
 
                 optimizer.asu.cell *= 0.85  # try modifying cell
@@ -139,7 +138,6 @@ class mutate_reaxff_small2():
                         work_dir=self.work_dir,
                         connections=self.connection_dir,
                         library='reaxff',
-                        spacegroup=sg,
                     )
                     new = optimizer.run(steps=50, traj=True)
                     best = optimizer.best_structure
@@ -161,5 +159,5 @@ class mutate_reaxff_small2():
             pass
         else:
             os.remove(traj_dir)
-        shutil.rmtree(os.path.join(self.work_dir, 'CalcFold'))
+        shutil.rmtree(os.path.join(self.work_dir, 'CalcFold'), ignore_errors=True)
 
