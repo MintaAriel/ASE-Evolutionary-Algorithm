@@ -51,11 +51,30 @@ class CompareModel:
         ax.legend()
         ax.set_aspect('equal', adjustable='datalim')
 
-    def plot(self, save_path=None, show=True):
+    def plot(self, save_path=None, show=True, energy_offset=0.0):
         e1, e2, f1, f2, v1, v2 = self._collect()
 
         fig, axes = plt.subplots(1, 3, figsize=(18, 6))
-        self._scatter(axes[0], e1, e2, 'Energy / atom', 'eV/atom')
+        self._scatter(axes[0], e1, e2 + energy_offset, 'Energy / atom', 'eV/atom')
+        if energy_offset != 0.0:
+            axes[0].collections[0].set_label('Corrected: model + C')
+            axes[0].scatter(e1, e2, s=16, alpha=0.65, marker='x',
+                            color='tab:orange', label='Original model')
+            lo = float(min(e1.min(), e2.min(), (e2 + energy_offset).min()))
+            hi = float(max(e1.max(), e2.max(), (e2 + energy_offset).max()))
+            axes[0].lines[0].set_data([lo, hi], [lo, hi])
+            axes[0].relim()
+            axes[0].autoscale_view()
+            axes[0].legend(loc='lower right')
+            axes[0].set_ylabel('Model energy / atom [eV/atom]')
+            raw_rmse = float(np.sqrt(np.mean((e2 - e1) ** 2)))
+            corrected_rmse = float(np.sqrt(np.mean((e2 + energy_offset - e1) ** 2)))
+            annotation = (f'C = {energy_offset:+.8f} eV/atom\n'
+                          f'RMSE before = {raw_rmse:.6f} eV/atom\n'
+                          f'RMSE after = {corrected_rmse:.6f} eV/atom')
+            axes[0].text(0.04, 0.95, annotation,
+                         transform=axes[0].transAxes, va='top',
+                         bbox=dict(facecolor='white', alpha=0.85, edgecolor='gray'))
         self._scatter(axes[1], f1, f2, 'Forces', 'eV/Å')
         self._scatter(axes[2], v1, v2, 'Virial / atom', 'eV/atom')
 

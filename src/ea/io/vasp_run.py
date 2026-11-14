@@ -185,22 +185,18 @@ def run_vasp_folders(out_dir, traj, threads, threads_per_job, mode):
             job_id, out, err = f.result()
             print(f"Job {job_id} finished")
 
-def read_runs(traj, out_dir):
-    atoms = []
-    for i, _ in enumerate(traj):
-        outcar_path = Path(out_dir) / f"vasp_{i}" / 'OUTCAR'
-        atoms.append(read(outcar_path, format='vasp-out'))
+def read_runs(traj, out_dir, *, folders=None, output_name='results.traj', mode='a'):
+    """Read VASP results; optional explicit folders support incomplete campaigns.
 
-    out_path = Path(out_dir) / 'results.traj'
-    with Trajectory(out_path, mode='a') as traj_out:
+    Legacy calls retain append behavior. Use mode='w' for repeatable collection.
+    Returns the parsed ASE structures.
+    """
+    paths = ([Path(out_dir) / f'vasp_{i}' for i, _ in enumerate(traj)]
+             if folders is None else [Path(folder) for folder in folders])
+    atoms = [read(folder / 'OUTCAR', format='vasp-out') for folder in paths]
+    out_path = Path(out_dir) / output_name
+    with Trajectory(out_path, mode=mode) as traj_out:
         for a in atoms:
             traj_out.write(a)
     print(f'OUTCAR results saved to {out_path}')
-
-
-
-
-
-
-
-
+    return atoms

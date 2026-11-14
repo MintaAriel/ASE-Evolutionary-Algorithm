@@ -28,7 +28,6 @@ N times in parallel — exactly once per USPEX 26 relaxation wave.
 import argparse
 import json
 import os
-import re
 import sys
 import time
 import traceback
@@ -44,6 +43,10 @@ from ea.parallel.LBFGS_parallel import ParallelLBFGS
 from ea.io.read_input import parse_uspex26_workflow
 from ea.parallel.zpe import ParallelVibrations
 from ea.uspex.models import MODELS, resolve_model
+from ea.uspex.uspex26.calcfolders import (
+    ASE_MODE, USER_CODE_MODE, calcfolder_mode, calcfolder_name,
+    discover_calcfolders,
+)
 from ea.utils.config import load_config
 
 
@@ -208,38 +211,6 @@ class ModelSwitchingEvaluator:
 # CalcFolder discovery
 # ---------------------------------------------------------------------------
 
-# Legacy USPEX: 'CalcFold<N>' directly under the workdir.
-_CALC_RE = re.compile(r"CalcFold(\d+)$")
-# USPEX 26: 'Calcfold_<system>_<step>' under '<workdir>/Calculation'
-# (base_calc_folder = 'Calculation' in the USPEX 26 defaults).
-_CALC26_RE = re.compile(r"Calcfold_(\d+)_(.+)$")
-# Directories that may hold USPEX 26 Calcfold_* folders.
-_CALC26_BASES = ("Calculation", "CalculationTemp")
-
-
-ASE_MODE = "ase"
-USER_CODE_MODE = "user_code"
-
-
-def calcfolder_mode(cf):
-    """Return the external-relaxation interface used by *cf*, if ready.
-
-    USPEX code 20 writes ``input.xyz`` and consumes ``output.xyz``.  Legacy
-    code 99 writes ``geom.in`` and consumes ``geom.out`` + ``energy.txt``.
-    Prefer ASE if stale files from both interfaces happen to coexist.
-    """
-    cf = Path(cf)
-    ase_input = cf / "input.xyz"
-    if ase_input.is_file() and ase_input.stat().st_size > 0:
-        return ASE_MODE
-
-    user_input = cf / "geom.in"
-    if user_input.is_file() and user_input.stat().st_size > 0:
-        return USER_CODE_MODE
-
-    return None
-
-
 def read_calcfolder_input(cf, mode=None):
     """Read the relaxation input of *cf* with the reader its interface needs."""
     cf = Path(cf)
@@ -249,48 +220,6 @@ def read_calcfolder_input(cf, mode=None):
     if mode == USER_CODE_MODE:
         return read(cf / "geom.in", format="vasp")
     raise ValueError("no supported non-empty input file")
-
-
-def _pending(cf):
-    """Whether a calc folder has a complete input but no completion marker."""
-    mode = calcfolder_mode(cf)
-    if mode == ASE_MODE:
-        return not (cf / "output.xyz").is_file()
-    if mode == USER_CODE_MODE:
-        return not (cf / "energy.txt").is_file()
-    return False
-
-
-def discover_calcfolders(workdir):
-    """Return pending ``(sort_key, path)`` calculation folders.
-
-    Supports both the legacy layout (``CalcFold<N>`` under the workdir) and
-    USPEX 26 (``Calculation/Calcfold_<system>_<step>``), as well as the ASE
-    and legacy USER_CODE file protocols.
-    """
-    workdir = Path(workdir)
-    out = []
-
-    # Legacy 'CalcFold<N>' directly under the workdir.
-    for cf in workdir.iterdir():
-        if cf.is_dir():
-            m = _CALC_RE.match(cf.name)
-            if m and _pending(cf):
-                out.append(((0, int(m.group(1)), ""), cf))
-
-    # USPEX 26 'Calcfold_<system>_<step>' under 'Calculation'.
-    for base in _CALC26_BASES:
-        base_dir = workdir / base
-        if not base_dir.is_dir():
-            continue
-        for cf in base_dir.iterdir():
-            if cf.is_dir():
-                m = _CALC26_RE.match(cf.name)
-                if m and _pending(cf):
-                    out.append(((1, int(m.group(1)), m.group(2)), cf))
-
-    out.sort(key=lambda t: t[0])
-    return out
 
 
 # ---------------------------------------------------------------------------

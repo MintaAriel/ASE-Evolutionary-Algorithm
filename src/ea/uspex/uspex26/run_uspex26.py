@@ -9,6 +9,11 @@ folder::
 
     Calculation/Calcfold_<system>_<step>/
 
+USPEX 2622 instead uses
+``Calculation/Relaxation/Calcfold_<system>_<step>/try_<attempt>/``.
+The release is inferred from the executable name (e.g. ``uspex_2622``),
+or selected with ``--uspex-version 2622`` for an unnamed wrapper.
+
 containing ``input.xyz`` and launches ``commandExecutable``
 (``run_batch.py``), which just waits for ``output.xyz``.  Legacy code-99
 ``geom.in``/``energy.txt`` folders remain supported for non-molecular runs.
@@ -44,7 +49,8 @@ Usage::
     python run_uspex26.py                       # workdir = cwd, model=deepmd_d3, cpu
     python run_uspex26.py --workdir /path/to/run --model deepmd_d3 --device cuda
 
-Environment overrides: ``USPEX26_EXE``, ``WORKER_PY``, ``EA_CONFIG``.
+Environment overrides: ``USPEX26_EXE``, ``USPEX26_VERSION``, ``WORKER_PY``,
+``EA_CONFIG``. Standalone workers can use ``USPEX26_VERSION=2622``.
 """
 
 import argparse
@@ -62,6 +68,9 @@ EA_SRC = str(Path(__file__).resolve().parents[3])
 sys.path.insert(0, EA_SRC)
 from ea.io.read_input import parse_uspex26_workflow
 from ea.uspex.models import MODELS
+from ea.uspex.uspex26.calcfolders import (
+    VERSION_ENV, detect_uspex_version, discover_calcfolders,
+)
 from ea.utils.config import load_config
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -69,7 +78,6 @@ WORKER = SCRIPT_DIR / "worker.py"
 WORKER_CPU = SCRIPT_DIR / "worker_cpu.py"
 WORKER_CPU_DYN = SCRIPT_DIR / "worker_cpu_dynamic.py"
 WORKER_GPU = SCRIPT_DIR / "worker_gpu.py"
-CALC_DIR = "Calculation"      # USPEX 26 base_calc_folder
 DEFAULT_USPEX = "/home/vito/uspex_python/USPEX26/uspex_2607_linux/uspex_2607.sh"
 
 POLL = 3        # seconds between scans
@@ -117,20 +125,7 @@ def resolve_uspex(cfg, override=None):
 
 def count_pending(workdir):
     """Count ready Calcfold inputs that do not have their interface output."""
-    base = Path(workdir) / CALC_DIR
-    if not base.is_dir():
-        return 0
-    n = 0
-    for d in base.glob("Calcfold_*"):
-        ase_input = d / "input.xyz"
-        user_input = d / "geom.in"
-        ase_pending = (ase_input.is_file() and ase_input.stat().st_size > 0
-                       and not (d / "output.xyz").is_file())
-        user_pending = (user_input.is_file() and user_input.stat().st_size > 0
-                        and not (d / "energy.txt").is_file())
-        if d.is_dir() and (ase_pending or user_pending):
-            n += 1
-    return n
+    return len(discover_calcfolders(workdir))
 
 
 def _in_deepmd_env(cfg, worker_python, tail):
@@ -363,6 +358,9 @@ def main():
 
     p.add_argument("--uspex-exe", default=None,
                    help="USPEX 26 binary (default: config uspex26.exe)")
+    p.add_argument("--uspex-version", default=os.environ.get(VERSION_ENV),
+                   help="Release such as 2622; inferred from --uspex-exe "
+                        "when omitted. Selects the calculation-folder layout")
     p.add_argument("--worker-python", default=os.environ.get("WORKER_PY"),
                    help="Explicit python for worker.py; default runs it via "
                         "'conda run -n <deepmd.conda_env>'")
@@ -382,6 +380,12 @@ def main():
     cfg = load_config()
     workdir = os.path.abspath(os.path.expanduser(args.workdir))
     uspex = resolve_uspex(cfg, args.uspex_exe)
+    try:
+        uspex_version = detect_uspex_version(uspex, args.uspex_version)
+    except ValueError as exc:
+        p.error(str(exc))
+    if uspex_version:
+        os.environ[VERSION_ENV] = uspex_version
     device = args.device or (cfg.get("deepmd") or {}).get("device", "cpu")
 
     if args.worker in ("cpu", "cpu-dyn"):
@@ -475,6 +479,7 @@ def main():
 
     print(f"[launcher] workdir : {workdir}")
     print(f"[launcher] uspex26 : {uspex}")
+    print(f"[launcher] version : {uspex_version or 'unknown (legacy layout)'}")
     mode_name = ("per-structure CPU pool, memory-scheduled" if dyn_mode
                  else "per-structure CPU pool" if cpu_mode
                  else "per-GPU relaxation pool" if gpu_mode

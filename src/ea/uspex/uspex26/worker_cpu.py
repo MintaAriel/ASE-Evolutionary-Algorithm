@@ -233,7 +233,7 @@ def _relax_one(task):
 
     log_path = out_dir / "relax.log"
     t0 = time.perf_counter()
-    result = {"name": cf.name, "path": str(cf), "pid": os.getpid(),
+    result = {"name": batch_worker.calcfolder_name(cf), "path": str(cf), "pid": os.getpid(),
               "cores": list(_STATE.get("cores") or []), "ok": False,
               "energy": None, "zpe": 0.0, "wall": 0.0, "error": None,
               "log": str(log_path)}
@@ -290,7 +290,7 @@ def build_task(cf, mode, workdir, profile, want_zpe):
         "path": str(cf),
         "mode": mode,
         "atoms": atoms,
-        "out_dir": str(Path(workdir) / "cpu_out" / Path(cf).name),
+        "out_dir": str(Path(workdir) / "cpu_out" / batch_worker.calcfolder_name(cf)),
         "profile": profile,
         "zpe": want_zpe,
     }

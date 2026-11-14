@@ -79,7 +79,38 @@ def recalculate_batch_gulp():
             print(f'atom {i} done')
 
 
-def recalculate_batch():
+def recalculate_batch(input_path=None, output_path=None, model=None, device="gpu"):
+    if input_path is not None:
+        batch = read(input_path, index=":")
+        calc = DP(model=str(model), device=device)
+        # DeePMD 3.2 passes charge_spin=None to pre-3.2 frozen TorchScript
+        # models whose forward schema lacks that optional argument.
+        wrapper = getattr(calc.dp.deep_eval, "dp", None)
+        if wrapper is not None and hasattr(wrapper, "_forward_without_loss"):
+            original_forward = wrapper._forward_without_loss
+            def compatible_forward(task_key, inputs):
+                frozen = wrapper.model[task_key]
+                schema = getattr(frozen.forward, "schema", None)
+                if schema is not None:
+                    accepted = {arg.name for arg in schema.arguments}
+                    extra = set(inputs) - accepted
+                    if extra:
+                        if any(inputs[key] is not None for key in extra):
+                            raise ValueError(f"Frozen model does not support inputs: {extra}")
+                        inputs = {key: value for key, value in inputs.items() if key in accepted}
+                return original_forward(task_key, inputs)
+            wrapper._forward_without_loss = compatible_forward
+        with Trajectory(output_path, mode="w") as output:
+            for i, atom in enumerate(batch):
+                atom.calc = calc
+                energy = atom.get_potential_energy()
+                forces = atom.get_forces()
+                stress = atom.get_stress()
+                atom.calc = SinglePointCalculator(atom, energy=energy, forces=forces, stress=stress)
+                output.write(atom)
+                print(f"DeePMD frame {i + 1}/{len(batch)}", flush=True)
+        return
+
     # batch = read('/home/vito/uspex_matlab/theo_pyxtal/2THP/test_2/output.traj', index=':')
     # batch = read('/home/vito/PythonProjects/ASEProject/DeepmdTrain/allpbej_vasp.traj', index=':')
     batch = read('/home/vito/PythonProjects/ASEProject/DeepmdTrain/gfnff_tune/THP4_best_2.traj', index=':')
@@ -148,7 +179,7 @@ def test_compare_model():
 
 # recalculate_batch()
 # recalculate_batch_gulp()
-test_compare_model()
+# test_compare_model()
 # import numpy as np
 #
 # d = read('/home/vito/PythonProjects/ASEProject/DeepmdTrain/allpbebj_gfnff_my.traj',  index=':')[100]
@@ -160,3 +191,14 @@ test_compare_model()
 #
 # print(d.get_stress())
 # print(stress)
+
+
+if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description='DeePMD single points on an ASE trajectory')
+    parser.add_argument('--input', required=True)
+    parser.add_argument('--output', required=True)
+    parser.add_argument('--model', required=True)
+    parser.add_argument('--device', default='gpu')
+    args = parser.parse_args()
+    recalculate_batch(args.input, args.output, args.model, args.device)

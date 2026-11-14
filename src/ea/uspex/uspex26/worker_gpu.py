@@ -187,7 +187,7 @@ def _relax_one(task):
     log_path = out_dir / "relax.log"
     t0 = time.perf_counter()
     result = {
-        "name": cf.name,
+        "name": batch_worker.calcfolder_name(cf),
         "path": str(cf),
         "pid": os.getpid(),
         "gpu_id": gpu_id,
@@ -245,7 +245,7 @@ def build_task(cf, mode, workdir, profile, want_zpe):
         "path": str(cf),
         "mode": mode,
         "atoms": atoms,
-        "out_dir": str(Path(workdir) / "gpu_out" / Path(cf).name),
+        "out_dir": str(Path(workdir) / "gpu_out" / batch_worker.calcfolder_name(cf)),
         "profile": profile,
         "zpe": want_zpe,
     }
