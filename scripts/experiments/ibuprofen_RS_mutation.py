@@ -42,7 +42,6 @@ from ase.ga.data import PrepareDB
 from ase.io import Trajectory, read
 from pyxtal.symmetry import Group
 from pyxtal.tolerance import Tol_matrix
-from rdkit import Chem
 
 from ea.core import mutation
 from ea.structures.ase_creator import mol2ase2
@@ -53,6 +52,15 @@ MIN_DIR = Path.home() / 'skoltech/ms_thesis/experiments/ibuprofen/ibuprofen_top9
 OPERATORS = {'reaxff': mutation.mutate_reaxff,
              'reaxff_small': mutation.mutate_reaxff_small,
              'reaxff_small2': mutation.mutate_reaxff_small2}
+
+
+def mol_bonds(path):
+    """1-based (i, j) bond list from the V2000 bond block of a MOL file."""
+    lines = Path(path).read_text().splitlines()
+    c = next(i for i, l in enumerate(lines) if 'V2000' in l)
+    n_atoms, n_bonds = int(lines[c][0:3]), int(lines[c][3:6])
+    start = c + 1 + n_atoms
+    return sorted(tuple(sorted((int(l[0:3]), int(l[3:6])))) for l in lines[start:start + n_bonds])
 
 
 def parse_cpus(text):
@@ -136,8 +144,7 @@ def main():
     # Bond list (same atom order and topology in all 18 files) -> GULP connections
     bonds = None
     for f in r_files + s_files:
-        m = Chem.MolFromMolFile(str(f), removeHs=False)
-        b = sorted((x.GetBeginAtomIdx() + 1, x.GetEndAtomIdx() + 1) for x in m.GetBonds())
+        b = mol_bonds(f)
         assert bonds is None or b == bonds, f'{f.name}: different bond list'
         bonds = b
     conn_path = args.out / 'connections'
