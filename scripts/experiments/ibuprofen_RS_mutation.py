@@ -1,8 +1,10 @@
 """Racemic ibuprofen (Z = 4: 2 R + 2 S) seeds + ReaxFF mutation operators, optionally in parallel.
 
-1. Generate N random pyxtal crystals. Each one picks a random (R)-minimum and a random
-   (S)-minimum from the 9 lowest PM7 minima (mol_R/min_XX_R.mol, mol_S/min_YY_S.mol)
-   and places 2 copies of each.
+1. Generate N random pyxtal crystals, each with 2 copies of an (R)-minimum and 2 of an
+   (S)-minimum from the 9 lowest PM7 minima (mol_R/min_XX_R.mol, mol_S/min_YY_S.mol).
+   --pairs all (default): cycle through all 9 x 9 (R_i, S_j) pairs, ordered by i + j, so
+   every pair is used and the lowest-energy pairs get the extra copies when N is not a
+   multiple of 81. --pairs random: pick R and S at random.
 2. Store them in a theophilline.db (the db name mutation.py expects).
 3. Run the chosen operators (mutate_reaxff, mutate_reaxff_small, mutate_reaxff_small2).
 
@@ -72,8 +74,8 @@ def parse_cpus(text):
     return cpus
 
 
-def run_chunk(k, n, cpu, args, r_files, s_files, conn_path):
-    """Generate n structures and mutate them in <out>/chunks/chunk_k."""
+def run_chunk(k, pairs, cpu, args, conn_path):
+    """Generate one structure per (R file, S file) pair and mutate them in <out>/chunks/chunk_k."""
     wd0 = args.out / 'chunks' / f'chunk_{k:02d}'
     wd0.mkdir(parents=True, exist_ok=True)
     if cpu is not None:
@@ -86,10 +88,10 @@ def run_chunk(k, n, cpu, args, r_files, s_files, conn_path):
     counts = [args.n_r, args.n_s]
     groups = compatible_groups(counts)
     tm = Tol_matrix(prototype='vdW', factor=args.vdw_factor)
+    n = len(pairs)
     print(f'chunk {k}: {n} structures, cpu {cpu}, counts R/S {counts}, groups {groups}')
     structures = []
-    for i in range(n):
-        fr, fs = random.choice(r_files), random.choice(s_files)
+    for i, (fr, fs) in enumerate(pairs):
         a = sym_molcrys_multi([mol2ase2(fr), mol2ase2(fs)], counts, groups=groups, tm=tm)
         a.info.update(mol_R=fr.stem, mol_S=fs.stem)
         structures.append(a)
@@ -126,6 +128,8 @@ def main():
     p.add_argument('--vdw-factor', type=float, default=0.7)
     p.add_argument('--seed', type=int, default=0)
     p.add_argument('--operators', nargs='+', default=list(OPERATORS), choices=list(OPERATORS))
+    p.add_argument('--pairs', choices=['all', 'random'], default='all',
+                   help='all: cycle through every (R_i, S_j) pair; random: random picks')
     p.add_argument('--workers', type=int, default=1)
     p.add_argument('--cpus', type=parse_cpus, default=None,
                    help="CPUs to pin workers to, e.g. '240-255' (one per worker)")
@@ -150,14 +154,25 @@ def main():
     conn_path = args.out / 'connections'
     conn_path.write_text(''.join(f'connect {i:4d} {j:4d}\n' for i, j in bonds))
 
-    sizes = [len(c) for c in np.array_split(np.arange(args.n_structures), args.workers)]
-    print(f'{args.n_structures} structures in {args.workers} chunks {sizes}, CPUs {args.cpus}, '
-          f'operators {args.operators}\nlogs: {args.out}/chunks/chunk_XX/log.txt', flush=True)
+    rng = random.Random(args.seed)
+    if args.pairs == 'all':
+        combos = sorted(((r, s) for r in r_files for s in s_files),
+                        key=lambda rs: (int(rs[0].stem.split('_')[1]) + int(rs[1].stem.split('_')[1]),
+                                        rs[0].stem, rs[1].stem))
+        pairs = [combos[i % len(combos)] for i in range(args.n_structures)]
+    else:
+        pairs = [(rng.choice(r_files), rng.choice(s_files)) for _ in range(args.n_structures)]
+    chunks = [[pairs[i] for i in c] for c in np.array_split(np.arange(args.n_structures), args.workers)]
+    sizes = [len(c) for c in chunks]
+    uniq = len(set((r.stem, s.stem) for r, s in pairs))
+    print(f'{args.n_structures} structures ({uniq} distinct R/S pairs) in {args.workers} chunks {sizes}, '
+          f'CPUs {args.cpus}, operators {args.operators}\n'
+          f'logs: {args.out}/chunks/chunk_XX/log.txt', flush=True)
     ctx = mp.get_context('fork')
     procs = []
-    for k, n in enumerate(sizes):
+    for k, chunk in enumerate(chunks):
         cpu = args.cpus[k] if args.cpus is not None else None
-        pr = ctx.Process(target=run_chunk, args=(k, n, cpu, args, r_files, s_files, conn_path))
+        pr = ctx.Process(target=run_chunk, args=(k, chunk, cpu, args, conn_path))
         pr.start()
         procs.append(pr)
     for pr in procs:
